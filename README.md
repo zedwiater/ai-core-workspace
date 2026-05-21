@@ -6,24 +6,35 @@ The framework utilizes a continuous **Intercept & Compute Cycle**. When a user t
 
 ---
 
+## 🧠 Intelligent, Hardware-Adaptive Installation Architecture
+
+Unlike static installation scripts, this project features a smart deployment engine (`install.sh`) that dynamically inspects your host machine's hardware topology to configure an optimized runtime environment:
+
+* **Dynamic Memory Thresholding**: The installer audits total available system RAM ($M_{total}$). If the system has 16GB or more, it automatically pulls and targets the high-capability **Qwen 3.5 8B** model. On memory-constrained setups (<16GB), it intelligently transitions to an ultra-efficient **Qwen 3.5 1.5B** fallback layer to maximize token velocity and prevent Out-Of-Memory (OOM) crashing.
+* **Automated GPU Compute Detection**: The installation layer probes the PCI bus (`lspci`) for discrete hardware graphics accelerators. 
+  * **NVIDIA Ecosystem**: Automatically configures support hooks and provisions standard compute utilities if applicable.
+  * **AMD Radeon Ecosystem**: Sets up ROCm open-ecosystem compatibility variables.
+  * **CPU Fallback**: Optimizes CPU execution threads if a dedicated graphics unit is missing.
+* **Orchestration Tuning & VRAM Splitting**: The installer injects hardware-specific execution configurations directly into a customized Systemd override layer (`/etc/systemd/system/ollama.service.d/override.conf`). This sets variables like `OLLAMA_NUM_PARALLEL` and pins device environment flags (`CUDA_VISIBLE_DEVICES` or `HSA_OVERRIDE_GFX_VERSION`) to ensure seamless VRAM loading and hardware layer offloading.
+
+---
+
 ## 🏗️ System Architecture & Framework Layout
 
 The project splits resource handling across 8 decoupled, ultra-lightweight system background socket nodes acting as an abstraction layer for Model Context Protocol (MCP) interactions:
 
-* **⚡ Shell (\`mcp-shell.py\`)**: Handles low-level terminal command invocation (\`exec\`).
-* **📁 Files (\`mcp-files.py\`)**: Intercepts file system context requests and streams target reads safely.
-* **🧠 Memory (\`mcp-memory.py\`)**: Manages long-term state across independent execution loops.
-* **🌐 Web (\`mcp-web.py\`) / 👁️ Vision (\`mcp-vision.py\`)**: Pipeline vectors for live internet routing and image matrix parsing.
+* **⚡ Shell (`mcp-shell.py`)**: Handles low-level terminal command invocation (`exec`).
+* **📁 Files (`mcp-files.py`)**: Intercepts file system context requests and streams target reads safely.
+* **🧠 Memory (`mcp-memory.py`)**: Manages long-term state across independent execution loops.
+* **🌐 Web (`mcp-web.py`) / 👁️ Vision (`mcp-vision.py`)**: Pipeline vectors for live internet routing and image matrix parsing.
 * **🔊 Sound / 🎤 Voice / 💻 Coding**: Auxiliary hooks for real-time environment automation.
 
 ---
 
 ## 📦 Universal Distribution Package Structure
 
-The repository is organized cleanly to allow effortless distribution or compilation across multiple Linux distributions (Ubuntu/Debian, Fedora, Arch Linux):
-
-\`\`\`text
-├── install.sh                               # Multi-distro dependency & setup wrapper
+```text
+├── install.sh                               # Intelligent, hardware-adaptive setup engine
 ├── README.md                                # Project landing page & technical documentation
 ├── ai_core_distro_install_instructions.png  # Graphic onboarding map
 └── source/
@@ -31,40 +42,3 @@ The repository is organized cleanly to allow effortless distribution or compilat
     │   └── ai-client.py                     # Main GTK4 multi-threaded client application
     └── mcp/
         └── mcp-*.py                         # The 8 background micro-service socket loops
-\`\`\`
-
----
-
-## 🚀 Quickstart Installation
-
-Anyone can deploy this framework globally to their Linux system with a single execution flow.
-
-### 1. Clone or Download the Bundle
-Extract the release tarball or clone the repository directly:
-\`\`\`bash
-git clone https://github.com/YOUR_USERNAME/ai-core-workspace.git
-cd ai-core-workspace
-\`\`\`
-
-### 2. Execute the Master Installer
-Run the universal automation script to satisfy system runtimes (PyGObject, GTK4, Cairo), compile systemd daemons, register command-line symbols, and create application entries:
-\`\`\`bash
-sudo ./install.sh
-\`\`\`
-
-### 3. Initialize Workspace
-Launch the application panel natively from your distribution launcher application menu or spin it directly from the terminal shell:
-\`\`\`bash
-ai-client
-\`\`\`
-
----
-
-## 🛠️ Operational Capability Highlights
-
-* **Dynamic Model Interrogator**: Queries your local Ollama server instance (\`/api/tags\`) automatically at runtime to populate a clean selection menu.
-* **Visual Status Micro-mesh**: Continually polls local service sockets asynchronously every 2.5 seconds to accurately reflect background node availability using colorized frontend GTK indicator nodes.
-* **Self-Healing Services**: Systemd process management profiles keep all backend execution sockets alive with instantaneous auto-restart policies.
-
----
-*Developed as an open-source framework for secure, local system management automation.*
