@@ -18,7 +18,7 @@ REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 
 echo "📦 Step 1: Resolving baseline Linux runtime packages..."
 if command -v apt-get &>/dev/null; then
-    apt-get update && apt-get install -y python3 python3-gi python3-gi-cairo libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libcairo2-dev curl lshw pciutils
+    apt-get update && apt-get install -y python3 python3-gi python3-gi-cairo libgtk-4-dev gir1.2-gtk-4.0 libadwaita-1-dev gir1.2-adw-1 libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libcairo2-dev curl lshw pciutils
 elif command -v dnf &>/dev/null; then
     dnf install -y python3 python3-gobject cairo-gobject-devel libgirepository-devel curl lshw pciutils
 elif command -v pacman &>/dev/null; then
