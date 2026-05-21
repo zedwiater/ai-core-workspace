@@ -18,7 +18,7 @@ REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 
 echo "📦 Step 1: Resolving baseline Linux runtime packages..."
 if command -v apt-get &>/dev/null; then
-    apt-get update && apt-get install -y python3 python3-gi python3-gi-cairo libgirepository1.0-dev libcairo2-dev curl lshw pciutils
+    apt-get update && apt-get install -y python3 python3-gi python3-gi-cairo libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libcairo2-dev curl lshw pciutils
 elif command -v dnf &>/dev/null; then
     dnf install -y python3 python3-gobject cairo-gobject-devel libgirepository-devel curl lshw pciutils
 elif command -v pacman &>/dev/null; then
@@ -32,10 +32,10 @@ echo "📊 Detected System RAM: ${TOTAL_RAM_GB}GB"
 
 # Set model tier based on available system memory threshold
 if [ "$TOTAL_RAM_GB" -ge 16 ]; then
-    OPTIMAL_MODEL="qwen3.5:8b"
+    OPTIMAL_MODEL="qwen2.5:8b"
     echo "✅ Memory threshold met. Selected baseline performance tier: $OPTIMAL_MODEL"
 else
-    OPTIMAL_MODEL="qwen3.5:1.5b"
+    OPTIMAL_MODEL="qwen2.5:1.5b"
     echo "⚠️ Limited memory profile detected. Selected high-efficiency fallback tier: $OPTIMAL_MODEL"
 fi
 
@@ -109,7 +109,7 @@ cp -r source/app/* "$TARGET_DIR/app/"
 chmod +x "$TARGET_DIR/app/ai-client.py"
 
 # Dynamically patch the Python application source so its drop-down selector matches our auto-selected threshold model
-sed -i "s/self.model = \"qwen3.5:8b\"/self.model = \"$OPTIMAL_MODEL\"/g" "$TARGET_DIR/app/ai-client.py"
+sed -i "s/self.model = \"qwen2.5:8b\"/self.model = \"$OPTIMAL_MODEL\"/g" "$TARGET_DIR/app/ai-client.py"
 
 echo "⚙️ Step 6: Instantiating the 8 system automation micro-service channels..."
 MCP_NODES=("files" "web" "vision" "shell" "sound" "voice" "coding" "memory")
