@@ -31,6 +31,27 @@ The project splits resource handling across 8 decoupled, ultra-lightweight syste
 
 ---
 
+---
+
+## 📸 Core Architecture & Live Telemetry Profiles
+
+The following interface captures trace the development milestone from initial source consolidation on the primary workstation to full, resource-constrained edge execution.
+
+### 1. Hardware-Aware Edge Profiling & Daemon Setup
+An active look at the terminal environment during a cold installation on edge hardware. The deployment architecture successfully audits system memory thresholds, provisions user rendering permissions, and builds the localized execution layer completely on a CPU fallback layout.
+
+![Automated Hardware Auditing and Systemd Deployment Execution](resource_chrome.png)
+
+### 2. Asynchronous Modern GTK4 Graphic Core Window
+The operational, multi-threaded frontend engine executing natively. The interface leverages localized asynchronous socket pooling to continually display real-time micro-mesh states for active background tool-handling routines.
+
+![Active Core Application Interface Framework Rendering](glazing_chromebook_success.png)
+
+### 3. Live Tool Intercept Loop & Process Parsing
+Telemetry demonstrating the edge model successfully catching a system operational intent token. The 1.5B resource layer executes a localized shell script call (`ps aux --sort=-%cpu`) to pull host metrics and return an analytical process breakdown without starving system memory registers.
+
+![Context Execution Trace and Active CPU Resource Handling Map](functional_chrome.png)
+
 ## 📦 Universal Distribution Package Structure
 
 ```text
