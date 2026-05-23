@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""AI Core Workspace — merged client with tool interception + file attachment"""
 import gi, json, threading, os, sys, socket, base64, urllib.request, subprocess
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
@@ -34,6 +35,7 @@ class AIClient(Adw.Application):
         self.history = [{"role": "system", "content": SYSTEM_INSTRUCTIONS}]
         self.available_models = []
         self.model = "qwen3.5:8b"
+        self.attached_file = None
         self.indicators = {}
 
     def _fetch_models(self):
@@ -70,6 +72,10 @@ class AIClient(Adw.Application):
         self.model_dropdown.connect("notify::selected-item", self._on_model_changed)
         header.append(self.model_dropdown)
 
+        status_dot = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
+        status_dot.set_margin_start(8)
+        header.append(status_dot)
+
         title_lbl = Gtk.Label(label="AI Core Workspace Engine")
         title_lbl.set_hexpand(True)
         header.append(title_lbl)
@@ -84,6 +90,10 @@ class AIClient(Adw.Application):
 
         input_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         input_strip.set_margin_top(12); input_strip.set_margin_bottom(12); input_strip.set_margin_start(16); input_strip.set_margin_end(16)
+
+        attach_btn = Gtk.Button(icon_name="mail-attachment-symbolic")
+        attach_btn.connect("clicked", self._on_attach)
+        input_strip.append(attach_btn)
 
         self.entry = Gtk.Entry()
         self.entry.set_placeholder_text("Enter operational command or request...")
@@ -149,31 +159,64 @@ class AIClient(Adw.Application):
         adj.set_value(adj.get_upper() - adj.get_page_size())
         return False
 
+    def _on_attach(self, btn):
+        dialog = Gtk.FileChooserDialog(
+            title="Select Media Attachment",
+            transient_for=self.win,
+            action=Gtk.FileChooserAction.OPEN
+        )
+        dialog.add_button("_Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("_Open", Gtk.ResponseType.ACCEPT)
+        dialog.connect("response", self._handle_file_response)
+        dialog.present()
+
+    def _handle_file_response(self, dialog, response_id):
+        if response_id == Gtk.ResponseType.ACCEPT:
+            self.attached_file = dialog.get_file().get_path()
+            self.append_bubble(f"📎 Attached: {os.path.basename(self.attached_file)}", "user")
+        dialog.destroy()
+
     def _on_send(self, btn):
         text = self.entry.get_text().strip()
-        if not text:
+        if not text and not self.attached_file:
             return
         
-        self.append_bubble(text, "user")
+        if text:
+            self.append_bubble(text, "user")
         self.entry.set_text("")
         
         threading.Thread(target=self._compute_cycle, args=(text,), daemon=True).start()
 
     def _compute_cycle(self, prompt_text):
+        # If an image was attached, route through LLaVA
+        file_path = self.attached_file
+        self.attached_file = None
+        if file_path and file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+            self._compute_vision_response(prompt_text, file_path)
+            return
+
         self.history.append({"role": "user", "content": prompt_text})
         
         loop_count = 0
         while loop_count < 5:
             try:
-                payload = json.dumps({"model": self.model, "messages": self.history, "stream": False}).encode()
-                req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", data=payload, headers={"Content-Type": "application/json"})
+                payload = json.dumps({
+                    "model": self.model,
+                    "messages": self.history,
+                    "stream": False
+                }).encode()
+                req = urllib.request.Request(
+                    f"{OLLAMA_URL}/api/chat",
+                    data=payload,
+                    headers={"Content-Type": "application/json"}
+                )
                 
                 with urllib.request.urlopen(req) as r:
                     res = json.loads(r.read().decode())
                     ai_output = res.get("message", {}).get("content", "").strip()
                 
                 if ai_output.startswith("TOOL:"):
-                    GLib.idle_add(self.append_bubble, f"⚙️ Intercepted Tool Sequence:\n{ai_output}", "system")
+                    GLib.idle_add(self.append_bubble, f"⚙️ Tool:\n{ai_output}", "system")
                     tool_result = self._execute_tool_payload(ai_output)
                     
                     self.history.append({"role": "assistant", "content": ai_output})
@@ -185,8 +228,38 @@ class AIClient(Adw.Application):
                     self.history.append({"role": "assistant", "content": ai_output})
                     break
             except Exception as e:
-                GLib.idle_add(self.append_bubble, f"Compute link error: {str(e)}", "ai")
+                GLib.idle_add(self.append_bubble, f"Error: {str(e)}", "ai")
                 break
+
+    def _compute_vision_response(self, prompt_text, file_path):
+        """Route an attached image through LLaVA vision model."""
+        try:
+            with open(file_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode('utf-8')
+            
+            GLib.idle_add(self.append_bubble, "⚡ Routing through LLaVA vision...", "user")
+            
+            msg = {"role": "user", "content": prompt_text, "images": [b64]}
+            payload = json.dumps({
+                "model": "llava:7b",
+                "messages": [msg],
+                "stream": False
+            }).encode()
+            
+            req = urllib.request.Request(
+                f"{OLLAMA_URL}/api/chat",
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            with urllib.request.urlopen(req) as r:
+                res = json.loads(r.read().decode())
+                response = res.get("message", {}).get("content", "Empty response")
+            
+            GLib.idle_add(self.append_bubble, response, "ai")
+            
+        except Exception as e:
+            GLib.idle_add(self.append_bubble, f"Vision error: {str(e)}", "ai")
 
     def _execute_tool_payload(self, tool_string):
         try:
@@ -205,10 +278,10 @@ class AIClient(Adw.Application):
                 if os.path.exists(path):
                     with open(path, 'r', errors='ignore') as f:
                         return f.read(4000)
-                return "Error: File target path context does not exist."
+                return "Error: File not found."
         except Exception as e:
-            return f"Tool Framework Interruption Exception: {str(e)}"
-        return "Unknown or unimplemented tool command syntax invocation."
+            return f"Tool error: {str(e)}"
+        return "Unknown tool command."
 
     def _monitor_services(self):
         while True:

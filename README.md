@@ -10,6 +10,8 @@ Built because cloud APIs are expensive and local models are good enough. Runs co
 
 You type something into the chat window. The model thinks. If it needs to do something — run a command, read a file, grab a camera frame — it emits a structured tool token. The client catches it, executes it safely, and feeds the result back into the conversation. Loop repeats up to 5 times, then the model gives you a final answer.
 
+**Attach an image** and the client auto-routes through LLaVA 7B for vision analysis — no manual model switching needed.
+
 No API keys. No internet required. Just Ollama on localhost:11434.
 
 ---
