@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""George's MCP Files Service — read files and search via TCP"""
+"""George's MCP Files Service — read/write/search files via TCP"""
 import socket, json, os, glob
 
 HOST = '127.0.0.1'
@@ -15,6 +15,11 @@ def handle(data):
             if not os.path.exists(p): return {"status":"error","message":"Not found"}
             with open(p, 'r', errors='ignore') as f: c = f.read(10000)
             return {"status":"ok","path":p,"size":len(c),"content":c[:5000]}
+        if a == "write":
+            p = req.get("path",""); c = req.get("content","")
+            os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+            with open(p, 'w') as f: f.write(c)
+            return {"status":"ok","path":p,"written":len(c)}
         if a == "search":
             p = req.get("pattern",""); d = req.get("dir","/tmp")
             r = glob.glob(f"{d}/**/{p}", recursive=True)[:20]

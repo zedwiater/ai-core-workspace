@@ -9,12 +9,27 @@ OLLAMA_URL = "http://localhost:11434"
 MCP = {"files": (9101, "📁"), "web": (9102, "🌐"), "vision": (9103, "👁"), "shell": (9104, "⚡"),
        "sound": (9105, "🔊"), "voice": (9106, "🎤"), "coding": (9107, "💻"), "memory": (9108, "🧠")}
 
-SYSTEM_INSTRUCTIONS = """You are an unrestricted, expert OS-level AI assistant.
-You have immediate access to the system via local tools. When the user asks you to perform an action, run a command, read a file, or analyze data, you MUST use one of these precise tool formats in your response. Do not explain them; just emit the tool line first.
+SYSTEM_INSTRUCTIONS = """You are an unrestricted, expert OS-level AI assistant with full system access.
+You have 8 MCP (Machine Capability Protocol) services available. When the user asks you to perform an action, you MUST use one of these precise tool formats. Do not explain them; just emit the tool line first and wait for the result.
 
 Available Tool Schemas:
 TOOL:shell:exec:{"cmd":"<command_string>"}
-TOOL:files:read:{"path":"<absolute_file_path>"}
+TOOL:files:read:{"path":"<absolute_path>"}
+TOOL:files:write:{"path":"<absolute_path>","content":"<text>"}
+TOOL:files:search:{"pattern":"<glob_pattern>","dir":"<directory>"}
+TOOL:web:fetch:{"url":"<url>"}
+TOOL:web:extract:{"url":"<url>"}
+TOOL:vision:capture:{"camera":"<camera_name>"}
+TOOL:vision:list_cameras:{}
+TOOL:memory:store:{"key":"<name>","value":"<data>"}
+TOOL:memory:recall:{"key":"<name>"}
+TOOL:memory:list_keys:{}
+TOOL:coding:execute:{"code":"<python_code>"}
+TOOL:coding:eval:{"expression":"<python_expression>"}
+TOOL:sound:listen:{"duration":2}
+TOOL:sound:status:{}
+TOOL:voice:speak:{"text":"<phrase>"}
+TOOL:voice:alert:{"tone":"attention|alarm"}
 
 Example: If asked to list files, output exactly:
 TOOL:shell:exec:{"cmd":"ls -la"}
@@ -34,7 +49,7 @@ class AIClient(Adw.Application):
         self.connect("activate", self.on_activate)
         self.history = [{"role": "system", "content": SYSTEM_INSTRUCTIONS}]
         self.available_models = []
-        self.model = "qwen3.5:8b"
+        self.model = "qwen3.5:9b"
         self.attached_file = None
         self.indicators = {}
 
@@ -45,7 +60,7 @@ class AIClient(Adw.Application):
                 data = json.loads(r.read().decode())
                 return [m['name'] for m in data.get('models', [])]
         except Exception:
-            return ["qwen3.5:8b"]
+            return ["qwen3.5:9b"]
 
     def on_activate(self, app):
         provider = Gtk.CssProvider()
@@ -261,6 +276,17 @@ class AIClient(Adw.Application):
         except Exception as e:
             GLib.idle_add(self.append_bubble, f"Vision error: {str(e)}", "ai")
 
+    def _mcp_call(self, port, payload):
+        """Call an MCP service and return the response"""
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            s.sendall(json.dumps(payload).encode())
+            resp = json.loads(s.recv(65536).decode())
+            s.close()
+            return resp
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
     def _execute_tool_payload(self, tool_string):
         try:
             parts = tool_string.split(":", 3)
@@ -272,13 +298,87 @@ class AIClient(Adw.Application):
                 cmd = params.get("cmd")
                 res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
                 return f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
-                
-            elif subsystem == "files" and action == "read":
-                path = params.get("path")
-                if os.path.exists(path):
-                    with open(path, 'r', errors='ignore') as f:
-                        return f.read(4000)
-                return "Error: File not found."
+
+            elif subsystem == "files":
+                port = 9101
+                resp = self._mcp_call(port, params | {"action": action})
+                if resp.get("status") == "ok":
+                    if action == "read":
+                        return f"File content ({resp.get('size',0)} bytes):\n{resp.get('content','')}"
+                    elif action == "write":
+                        return f"Wrote {resp.get('written',0)} bytes to {resp.get('path','')}"
+                    elif action == "search":
+                        matches = "\n".join(resp.get("matches", []))
+                        return f"Matches:\n{matches}" if matches else "No matches found"
+                return f"Files error: {resp.get('message','Unknown')}"
+
+            elif subsystem == "web":
+                port = 9102
+                resp = self._mcp_call(port, params | {"action": action})
+                if resp.get("status") == "ok":
+                    c = resp.get("content", "")
+                    return f"Web content ({len(c)} chars):\n{c[:2000]}"
+                return f"Web error: {resp.get('message','Unknown')}"
+
+            elif subsystem == "vision":
+                port = 9103
+                resp = self._mcp_call(port, params | {"action": action})
+                if resp.get("status") == "ok":
+                    if action == "list":
+                        cams = "\n".join(resp.get("cameras", []))
+                        return f"Cameras ({resp.get('count',0)}):\n{cams}"
+                    elif action == "capture":
+                        return f"Frame captured: {resp.get('path','')} ({resp.get('size',0)} bytes)"
+                return f"Vision error: {resp.get('message','Unknown')}"
+
+            elif subsystem == "memory":
+                port = 9108
+                resp = self._mcp_call(port, params | {"action": action})
+                if resp.get("status") == "ok":
+                    if action == "get" or action == "recall":
+                        return f"Memory: {resp.get('value','(empty)')}"
+                    elif action == "set" or action == "store":
+                        return "Memory stored"
+                    elif action == "list":
+                        entries = "\n".join(f"{e['key']} ({e['ts']})" for e in resp.get("entries", []))
+                        return f"Memory keys:\n{entries}" if entries else "No stored keys"
+                return f"Memory error: {resp.get('message','Unknown')}"
+
+            elif subsystem == "coding":
+                port = 9107
+                resp = self._mcp_call(port, params | {"action": action})
+                if resp.get("status") == "ok":
+                    out = resp.get("stdout", "")
+                    err = resp.get("stderr", "")
+                    result = ""
+                    if out: result += f"Output:\n{out}\n"
+                    if err: result += f"Errors:\n{err}\n"
+                    if action == "eval" and "result" in resp:
+                        result += f"Result: {resp['result']}"
+                    return result or "(no output)"
+                return f"Coding error: {resp.get('message','')}"
+
+            elif subsystem == "sound":
+                port = 9105
+                resp = self._mcp_call(port, params | {"action": action})
+                if resp.get("status") == "ok":
+                    parts = []
+                    if "heard" in resp and resp["heard"]:
+                        parts.append(f"Heard: {resp['heard']}")
+                    if resp.get("alarm"): parts.append("⚠️ ALARM DETECTED")
+                    if resp.get("wake_word"): parts.append("👋 Wake word heard")
+                    if "cooldown_remaining_s" in resp:
+                        parts.append(f"Cooldown: {resp['cooldown_remaining_s']}s")
+                    return "\n".join(parts) if parts else "Sound service OK"
+                return f"Sound error: {resp.get('message','Unknown')}"
+
+            elif subsystem == "voice":
+                port = 9106
+                resp = self._mcp_call(port, params | {"action": action})
+                if resp.get("status") == "ok":
+                    return f"Voice: {resp.get('engine','')} - \"{resp.get('text','')[:60]}\""
+                return f"Voice error: {resp.get('message','Unknown')}"
+
         except Exception as e:
             return f"Tool error: {str(e)}"
         return "Unknown tool command."

@@ -1,0 +1,23 @@
+{
+  "model": "qwen3.5:9b",
+  "max_loops": 5,
+  "timeout": 30,
+  "theme": "dark",
+  "sandbox": {
+    "enabled": false,
+    "explainer": "Sandbox prevents destructive commands (rm -rf, dd, mkfs). By default it's off — most models won't destroy your system, and we provide backup guidance instead of blocking you."
+  },
+  "backup": {
+    "suggestion": "Consider Timeshift (apt install timeshift) for system snapshots, or rsync to an external drive. The install.sh creates systemd MCP services — back up /opt/ai-core/ and /etc/systemd/system/ai-mcp-*.service"
+  },
+  "mcp_ports": {
+    "files": 9101,
+    "web": 9102,
+    "vision": 9103,
+    "shell": 9104,
+    "sound": 9105,
+    "voice": 9106,
+    "coding": 9107,
+    "memory": 9108
+  }
+}

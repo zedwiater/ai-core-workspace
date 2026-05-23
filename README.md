@@ -1,6 +1,6 @@
 # ai-core-workspace
 
-A GTK4 desktop client that plugs your local Ollama models directly into your system. Not a chat wrapper — it's an Intercept & Compute cycle that lets AI run commands, read files, and manage your machine through 8 micro-services running as background sockets.
+A GTK4 desktop client that plugs your local Ollama models directly into your system. Not a chat wrapper — it's an **Intercept & Compute cycle** that lets AI run commands, read files, analyze cameras, and manage your machine through 8 MCP micro-services running as background sockets.
 
 Built because cloud APIs are expensive and local models are good enough. Runs completely offline.
 
@@ -8,7 +8,7 @@ Built because cloud APIs are expensive and local models are good enough. Runs co
 
 ## What It Does
 
-You type something into the chat window. The model thinks. If it needs to do something — run a command, read a file, grab a camera frame — it emits a structured tool token. The client catches it, executes it safely, and feeds the result back into the conversation. Loop repeats up to 5 times, then the model gives you a final answer.
+You type something into the chat window. The model thinks. If it needs to do something — run a command, read a file, grab a camera frame, execute code, store memory — it emits a structured tool token. The client catches it, routes it to the MCP service, and feeds the result back. Loop repeats up to 5 times, then the model gives a final answer.
 
 **Attach an image** and the client auto-routes through LLaVA 7B for vision analysis — no manual model switching needed.
 
@@ -16,35 +16,22 @@ No API keys. No internet required. Just Ollama on localhost:11434.
 
 ---
 
-## The MCP Micro-Services
+## The 8 MCP Micro-Services
 
-8 background services that listen on localhost sockets (ports 9101–9108). The client shows live red/green indicators for each one in a sidebar.
+All run as systemd services, restarted automatically if they crash.
 
-| Icon | Service | What It Does |
-|------|---------|-------------|
-| ⚡ | **Shell** (9104) | Runs system commands with 10s timeout safety |
-| 📁 | **Files** (9101) | Reads and searches files up to 4000 chars |
-| 🌐 | **Web** (9102) | Fetches URLs and checks connectivity |
-| 👁 | **Vision** (9103) | Grabs frames from 9 RTSP cameras (Wyze Bridge on Pi) |
-| 🔊 | **Sound** (9105) | Listens for wake word "Hey George", alarm/keyword detection |
-| 🎤 | **Voice** (9106) | Speaks through speakers via edge-tts or espeak |
-| 💻 | **Coding** (9107) | Code execution stub — ready for expansion |
-| 🧠 | **Memory** (9108) | SQLite key-value store for persistent agent state |
+| Icon | Service | Port | What It Does |
+|------|---------|------|-------------|
+| ⚡ | **Shell** | 9104 | Runs system commands with timeout safety |
+| 📁 | **Files** | 9101 | Read, write, and glob-search files |
+| 🌐 | **Web** | 9102 | Fetch URLs and extract readable text |
+| 👁 | **Vision** | 9103 | Grab RTSP frames from 9 cameras (Pi Wyze Bridge) |
+| 🔊 | **Sound** | 9105 | Wake word "Hey George", alarm detection, cooldown |
+| 🎤 | **Voice** | 9106 | TTS via edge-tts or espeak, alert tones |
+| 💻 | **Coding** | 9107 | Execute Python code with timeout |
+| 🧠 | **Memory** | 9108 | Persistent SQLite key-value store |
 
-The vision service connects to a Raspberry Pi running Wyze Bridge at 192.168.68.97:8554 and can grab frames from all 9 cameras. Sound service does continuous keyword spotting — smoke alarms, wake words, cooldown commands.
-
----
-
-## Hardware Detection
-
-The installer (`install.sh`) probes your system automatically:
-
-- **RAM ≥16GB** → targets Qwen 3.5 8B model. Less → Qwen 3.5 1.5B
-- **NVIDIA GPU** → CUDA config
-- **AMD GPU** → ROCm/HSA config with `HSA_OVERRIDE_GFX_VERSION`
-- **CPU-only** → optimized thread execution
-
-Creates a systemd override at `/etc/systemd/system/ollama.service.d/override.conf` with your hardware-tuned parameters.
+The sidebar shows live green/red indicators for each service — green means responding, red means down.
 
 ---
 
@@ -57,61 +44,79 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Or run the client directly:
+Or without installing (just need Ollama):
 
 ```bash
+# Start MCP services manually
+for f in source/mcp/mcp-*.py; do python3 "$f" &; done
+
+# Run the client
 python3 source/app/ai-client.py
-```
-
-For the MCP services:
-
-```bash
-# Start all 8 services
-for f in source/mcp/mcp-*.py; do
-    python3 "$f" &
-done
 ```
 
 ---
 
-## Screenshots
+## Tool Schemas (for the AI)
 
-### Hardware Detection & Install
-![Installer probing system RAM and GPU](resource_chrome.png)
+When the model emits tool tokens, the client catches them. Full 16-tool set:
 
-### Client Interface
-![GTK4 chat window with 8 MCP indicators in sidebar](glazing_chromebook_success.png)
-
-### Tool Intercept Loop
-![Model executing a shell command via tool token](functional_chrome.png)
+```
+TOOL:shell:exec:{"cmd":"<command>"}
+TOOL:files:read:{"path":"<path>"}
+TOOL:files:write:{"path":"<path>","content":"<text>"}
+TOOL:files:search:{"pattern":"<glob>","dir":"<dir>"}
+TOOL:web:fetch:{"url":"<url>"}
+TOOL:web:extract:{"url":"<url>"}
+TOOL:vision:capture:{"camera":"<name>"}
+TOOL:vision:list_cameras:{}
+TOOL:memory:store:{"key":"<name>","value":"<data>"}
+TOOL:memory:recall:{"key":"<name>"}
+TOOL:memory:list_keys:{}
+TOOL:coding:execute:{"code":"<python>"}
+TOOL:coding:eval:{"expression":"<expr>"}
+TOOL:sound:listen:{"duration":2}
+TOOL:voice:speak:{"text":"<phrase>"}
+TOOL:voice:alert:{"tone":"attention|alarm"}
+```
 
 ---
 
 ## Project Layout
 
 ```
-├── install.sh                  # Smart installer (RAM/GPU detection)
+├── install.sh                  # Smart installer (RAM/GPU detection, uninstall)
 ├── README.md                   # This file
 ├── source/
 │   ├── app/
-│   │   └── ai-client.py        # GTK4/Libadwaita client
-│   └── mcp/
-│       ├── mcp-shell.py        # Shell execution (port 9104)
-│       ├── mcp-files.py        # File operations (port 9101)
-│       ├── mcp-web.py          # Web fetcher (port 9102)
-│       ├── mcp-vision.py       # Camera frame grabber (port 9103)
-│       ├── mcp-sound.py        # Wake word + alarm detection (port 9105)
-│       ├── mcp-voice.py        # Text-to-speech (port 9106)
-│       ├── mcp-coding.py       # Code execution stub (port 9107)
-│       └── mcp-memory.py       # SQLite state store (port 9108)
+│   │   └── ai-client.py        # GTK4/Libadwaita client (327 lines)
+│   ├── mcp/
+│   │   ├── mcp-shell.py        # Shell execution (port 9104)
+│   │   ├── mcp-files.py        # Read/write/search files (9101)
+│   │   ├── mcp-web.py          # Fetch + HTML extract (9102)
+│   │   ├── mcp-vision.py       # 9 RTSP cameras (9103)
+│   │   ├── mcp-sound.py        # Wake word + alarm detection (9105)
+│   │   ├── mcp-voice.py        # TTS via edge-tts/espeak (9106)
+│   │   ├── mcp-coding.py       # Python code execution (9107)
+│   │   └── mcp-memory.py       # SQLite key-value store (9108)
+│   └── config.json             # Default configuration
 ```
+
+---
+
+## Uninstall
+
+```bash
+sudo ./install.sh uninstall
+```
+
+Removes MCP services, desktop entry, and /opt/ai-core. Preserves Ollama models and config.
 
 ---
 
 ## Requirements
 
 - Python 3.10+
-- GTK4 + Libadwaita (for the GUI client)
+- GTK4 + Libadwaita (for the GUI)
 - Ollama running on localhost:11434
 - (Optional) ffmpeg for camera frame grabbing
 - (Optional) whisper for sound keyword spotting
