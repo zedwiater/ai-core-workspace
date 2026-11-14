@@ -9,6 +9,9 @@ TARGET_DIR="/opt/ai-core"
 SYSTEMD_DIR="/etc/systemd/system"
 DESKTOP_DIR="/usr/share/applications"
 MCP_NODES=("files" "web" "vision" "shell" "sound" "voice" "coding" "memory")
+# Geometrically nested layout: each service lives in its ring under
+# source/rings/ (see docs/GEOMETRIC_NESTING.md). Names/ports unchanged.
+declare -A MCP_RING=( [files]=actuation [shell]=actuation [memory]=state [coding]=state [web]=atmosphere [vision]=atmosphere [sound]=atmosphere [voice]=atmosphere )
 
 # --- UNINSTALL ---
 if [[ "${1:-}" == "uninstall" ]]; then
@@ -106,8 +109,11 @@ else
 fi
 
 echo "📂 Step 5: Deploying files..."
-mkdir -p "$TARGET_DIR/app" "$TARGET_DIR/mcp"
-cp -r source/mcp/* "$TARGET_DIR/mcp/"
+mkdir -p "$TARGET_DIR/app" "$TARGET_DIR/core" "$TARGET_DIR/rings/state" "$TARGET_DIR/rings/actuation" "$TARGET_DIR/rings/atmosphere"
+cp -r source/core/* "$TARGET_DIR/core/"
+cp -r source/rings/state/* "$TARGET_DIR/rings/state/"
+cp -r source/rings/actuation/* "$TARGET_DIR/rings/actuation/"
+cp -r source/rings/atmosphere/* "$TARGET_DIR/rings/atmosphere/"
 cp -r source/app/* "$TARGET_DIR/app/"
 cp source/config.json "$TARGET_DIR/config.json" 2>/dev/null || true
 chmod +x "$TARGET_DIR/app/ai-client.py"
@@ -123,7 +129,7 @@ Description=AI Core MCP ($name)
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 $TARGET_DIR/mcp/mcp-$name.py
+ExecStart=/usr/bin/python3 $TARGET_DIR/rings/${MCP_RING[$name]}/mcp-$name.py
 Restart=always
 RestartSec=2
 User=$REAL_USER

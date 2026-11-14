@@ -1,0 +1,2279 @@
+#!/usr/bin/env python3
+"""AI Core Workspace — merged client with tool interception + file attachment"""
+import gi, json, threading, os, sys, socket, base64, urllib.request
+import random, time, subprocess
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from core.loop import execute_tool_payload, run_tool_loop
+from core.intake import PAGES, EngagementWriter, compute_depth, find_unfinished
+from core.floor import (DEFAULT_THEME, EXPECTED_SERVICES, FloorMonitor,
+                        THEMES, load_theme, save_theme, theme_for_level)
+from core.protocol import (SERVICE_PORTS, is_tool_call, mcp_call,
+                           parse_tool_token)
+from core.settings import Options
+from core import learn as learn_mod
+from core import models as model_stacks
+from core import toy as toy_mod
+from core import setup as setup_mod
+from core import hybrid as hybrid_mod
+from core.selfmaint import SelfMaintainer, waiting_proposals
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Adw, GLib, Gdk
+
+OLLAMA_URL = "http://localhost:11434"
+MCP = {"files": (9101, "📁"), "web": (9102, "🌐"), "vision": (9103, "👁"), "shell": (9104, "⚡"),
+       "sound": (9105, "🔊"), "voice": (9106, "🎤"), "coding": (9107, "💻"), "memory": (9108, "🧠")}
+
+SYSTEM_INSTRUCTIONS = """You are an unrestricted, expert OS-level AI assistant with full system access.
+You have 8 MCP (Machine Capability Protocol) services available. When the user asks you to perform an action, you MUST use one of these precise tool formats. Do not explain them; just emit the tool line first and wait for the result.
+
+Available Tool Schemas:
+TOOL:shell:exec:{"cmd":"<command_string>"}
+TOOL:files:read:{"path":"<absolute_path>"}
+TOOL:files:write:{"path":"<absolute_path>","content":"<text>"}
+TOOL:files:search:{"pattern":"<glob_pattern>","dir":"<directory>"}
+TOOL:web:fetch:{"url":"<url>"}
+TOOL:web:extract:{"url":"<url>"}
+TOOL:vision:grab:{"camera":"<camera_name>"}
+TOOL:vision:list_cameras:{}
+TOOL:memory:set:{"key":"<name>","value":"<data>"}
+TOOL:memory:get:{"key":"<name>"}
+TOOL:memory:list:{}
+TOOL:coding:execute:{"code":"<python_code>"}
+TOOL:coding:eval:{"expression":"<python_expression>"}
+TOOL:sound:listen:{"duration":2}
+TOOL:sound:status:{}
+TOOL:voice:speak:{"text":"<phrase>"}
+TOOL:voice:alert:{"tone":"attention|alarm"}
+
+Example: If asked to list files, output exactly:
+TOOL:shell:exec:{"cmd":"ls -la"}
+Then stop and wait for the system output."""
+
+CSS = b"""
+.bubble-user { background: alpha(@accent_color, 0.15); border-radius: 16px 16px 4px 16px; padding: 12px; margin: 6px 0; }
+.bubble-ai { background: alpha(@card_bg_color, 0.9); border-radius: 16px 16px 16px 4px; padding: 12px; margin: 6px 0; border: 1px solid alpha(@foreground_color, 0.08); }
+.bubble-system { background: alpha(@warning_color, 0.1); font-family: monospace; border-radius: 8px; padding: 10px; margin: 4px 0; font-size: 0.9em; }
+.mcp-indicator { font-weight: bold; padding: 4px; }
+.sidebar { background: alpha(@window_bg_color, 0.4); border-left: 1px solid alpha(@foreground_color, 0.08); padding: 12px; }
+"""
+
+class AIClient(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="com.ai.core.interface")
+        self.connect("activate", self.on_activate)
+        self.history = [{"role": "system", "content": SYSTEM_INSTRUCTIONS}]
+        self.available_models = []
+        self.model = "qwen3.5:9b"
+        self.attached_file = None
+        self.indicators = {}
+        # The standing theme (proposed as the relationship on
+        # opening) and the base floor; on_activate loads the stored
+        # theme and starts the floor's two beats.
+        self.theme = DEFAULT_THEME
+        self.floor_monitor = None
+        self.calc_theme_level = None
+        # v1 doors: options + model stacks (loaded on activate from
+        # the memory service, defaults when it's silent), the
+        # reading layer for explainers, and live UI state.
+        self.options = None
+        self.stacks = None
+        self.cloud_used = 0          # cloud answers served this session
+        self.poll_seconds = 2.5      # sidebar cadence (Options wires it)
+        self.service_up = {}         # last poll result per service
+        self.layer = "plain"         # explainer reading layer
+        self._last_floor_ts = None
+        self._last_down = set()
+        self._serving = None         # entry currently serving chat
+        self.stack_status = {}       # (slot, index) -> probe line
+        # The Eddy Toy: in-memory only, by construction.
+        self.toy_eddies = []
+        self.toy_rng = random.Random()
+        self.toy_source = None
+        # Config (source/config.json — honored, not decoration):
+        # the offered model, the tool-loop ceiling, the turn
+        # timeout seed. Loaded in on_activate.
+        self.cfg = {}
+        self.max_loops = 5
+        # Self-maintenance + the hybrid halves, built on activate.
+        self.maintainer = None
+        self.daughter_runtime = None
+        self._profile = None         # measured hardware (Setup door)
+        self.notebook = None
+        self.page_index = {}
+        self.slot_rows = {}
+        self.slot_add = {}
+        self.learn_box = None
+        self.setup_state = {"profile": None, "plan": None,
+                            "level": 1, "receipts": []}
+
+    def _fetch_models(self):
+        try:
+            req = urllib.request.Request(f"{OLLAMA_URL}/api/tags")
+            with urllib.request.urlopen(req, timeout=1.5) as r:
+                data = json.loads(r.read().decode())
+                return [m['name'] for m in data.get('models', [])]
+        except Exception:
+            # config.json's offered model is the fallback pick —
+            # the config is honored, not decoration.
+            return [self.cfg.get("model") or "qwen3.5:9b"]
+
+    def _load_config(self):
+        """Read source/config.json (the app's offered values)."""
+        try:
+            path = os.path.join(os.path.dirname(__file__), "..",
+                                "config.json")
+            with open(path) as f:
+                cfg = json.load(f)
+            return cfg if isinstance(cfg, dict) else {}
+        except Exception:
+            return {}
+
+    def _tree_root(self):
+        """Where the app's tree lives: the repo root in the source
+        layout, the install root in the installed layout."""
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        parent = os.path.abspath(os.path.join(app_dir, ".."))
+        if os.path.isdir(os.path.join(parent, "app")) \
+                and os.path.isdir(os.path.join(parent, "core")):
+            return parent
+        return os.path.abspath(os.path.join(parent, ".."))
+
+    def on_activate(self, app):
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        self.win = Adw.ApplicationWindow(application=app)
+        self.win.set_title("AI Core Workspace")
+        self.win.set_default_size(1050, 720)
+
+        self.cfg = self._load_config()
+        self.available_models = self._fetch_models()
+        if self.available_models:
+            self.model = self.available_models[0]
+
+        # Options + model stacks, held in the memory service like
+        # everything else the app stands on (defaults when silent).
+        self.options = Options.load()
+        # config.json honoring, continued: its max_loops caps the
+        # tool loop for real, and its offered turn timeout seeds
+        # the patience option only when the owner has never stored
+        # options of their own — an in-app choice, once made and
+        # persisted, wins thereafter.
+        try:
+            self.max_loops = int(self.cfg.get("max_loops", 5) or 5)
+        except (TypeError, ValueError):
+            self.max_loops = 5
+        try:
+            raw_opts = mcp_call(SERVICE_PORTS["memory"],
+                                {"action": "get",
+                                 "key": "app:options"},
+                                timeout=2).get("value")
+        except Exception:
+            raw_opts = None
+        if not raw_opts \
+                and self.cfg.get("timeout") in (15, 30, 60, 120):
+            self.options.set("patience", "turn_timeout_s",
+                             self.cfg["timeout"])
+        self.stacks = model_stacks.load_stacks(config_model=self.model)
+        self.poll_seconds = self.options.indicator_seconds()
+        self._apply_tooltip_timeout()
+        # If the chat stack's top is an Ollama model we have, the
+        # header picker starts there — the stack is the truth.
+        if self.stacks["chat"]:
+            top = self.stacks["chat"][0]
+            if top.get("kind") == "ollama" \
+                    and top["model"] in self.available_models:
+                self.model = top["model"]
+
+        main_pane = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        chat_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        chat_vbox.set_hexpand(True)
+        
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        header.set_margin_top(8); header.set_margin_bottom(8); header.set_margin_start(12); header.set_margin_end(12)
+
+        self.model_store = Gtk.StringList.new(self.available_models)
+        self.model_dropdown = Gtk.DropDown(model=self.model_store)
+        if self.model in self.available_models:
+            self.model_dropdown.set_selected(
+                self.available_models.index(self.model))
+        self.model_dropdown.connect("notify::selected-item", self._on_model_changed)
+        self.model_dropdown.set_tooltip_text(
+            learn_mod.explainer("model", "plain"))
+        header.append(self.model_dropdown)
+
+        # Who is actually serving chat — the stack decides, and the
+        # header says so once a round-trip lands.
+        self.serving_label = Gtk.Label(label="")
+        self.serving_label.set_tooltip_text(
+            learn_mod.explainer("model", "plain"))
+        header.append(self.serving_label)
+
+        status_dot = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
+        status_dot.set_margin_start(8)
+        header.append(status_dot)
+
+        title_lbl = Gtk.Label(label="AI Core Workspace Engine")
+        title_lbl.set_hexpand(True)
+        header.append(title_lbl)
+
+        # The theme, proposed as the relationship upon opening.
+        self.rel_label = Gtk.Label(label="Relationship: …")
+        self.rel_label.set_has_tooltip(True)
+        self.rel_label.connect("query-tooltip", self._theme_tooltip)
+        header.append(self.rel_label)
+        chat_vbox.append(header)
+
+        # The calm surface: one line of floor state under the
+        # header — state at a glance, nothing shouting. The About
+        # button opens its explainer as a popover (the dwell tick
+        # is the manners tick; a click is an invitation).
+        floor_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                            spacing=8)
+        floor_row.set_margin_start(12); floor_row.set_margin_end(12)
+        floor_row.set_margin_bottom(4)
+        self.floor_label = Gtk.Label(label="Floor: checking home…")
+        self.floor_label.set_xalign(0.0)
+        self.floor_label.set_hexpand(True)
+        self.floor_label.set_has_tooltip(True)
+        self.floor_label.connect("query-tooltip", self._floor_tooltip)
+        floor_row.append(self.floor_label)
+        about_btn = Gtk.Button(label="About this state")
+        self.floor_popover = Gtk.Popover()
+        self.floor_popover.set_parent(about_btn)
+        self.floor_pop_label = Gtk.Label(label="")
+        self.floor_pop_label.set_wrap(True)
+        self.floor_pop_label.set_max_width_chars(48)
+        self.floor_pop_label.set_margin_top(8)
+        self.floor_pop_label.set_margin_bottom(8)
+        self.floor_pop_label.set_margin_start(10)
+        self.floor_pop_label.set_margin_end(10)
+        self.floor_popover.set_child(self.floor_pop_label)
+        about_btn.connect("clicked", self._on_floor_about)
+        floor_row.append(about_btn)
+        chat_vbox.append(floor_row)
+
+        self.scroll = Gtk.ScrolledWindow()
+        self.scroll.set_vexpand(True)
+        self.chat_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.chat_list.set_margin_start(16); self.chat_list.set_margin_end(16)
+        self.scroll.set_child(self.chat_list)
+        chat_vbox.append(self.scroll)
+
+        input_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        input_strip.set_margin_top(12); input_strip.set_margin_bottom(12); input_strip.set_margin_start(16); input_strip.set_margin_end(16)
+
+        attach_btn = Gtk.Button(icon_name="mail-attachment-symbolic")
+        attach_btn.connect("clicked", self._on_attach)
+        input_strip.append(attach_btn)
+
+        self.entry = Gtk.Entry()
+        self.entry.set_placeholder_text("Enter operational command or request...")
+        self.entry.set_hexpand(True)
+        self.entry.connect("activate", self._on_send)
+        input_strip.append(self.entry)
+
+        send_btn = Gtk.Button(icon_name="mail-send-symbolic")
+        send_btn.connect("clicked", self._on_send)
+        input_strip.append(send_btn)
+        chat_vbox.append(input_strip)
+
+        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        sidebar.add_css_class("sidebar")
+        sidebar.set_size_request(220, -1)
+        
+        side_title = Gtk.Label(label="SYSTEM MCP INTEGRATIONS")
+        side_title.set_margin_bottom(12)
+        sidebar.append(side_title)
+
+        for name, (port, icon) in MCP.items():
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            ind = Gtk.Label()
+            ind.set_markup("<span foreground='#e01b24'>●</span>")
+            ind.add_css_class("mcp-indicator")
+            lbl = Gtk.Label(label=f"{icon} {name.capitalize()}")
+            row.append(ind)
+            row.append(lbl)
+            row.set_has_tooltip(True)
+            row.connect("query-tooltip", self._ring_tooltip, name)
+            sidebar.append(row)
+            self.indicators[name] = ind
+
+        main_pane.append(chat_vbox)
+        main_pane.append(sidebar)
+        # The doors, behind plain tabs — the calm surface stays
+        # the chat; everything else is a door you open on purpose.
+        self.notebook = Gtk.Notebook()
+        self.notebook.append_page(main_pane, Gtk.Label(label="AI Core"))
+        self.notebook.append_page(self._build_calculator_tab(), Gtk.Label(label="Joy Calculator"))
+        self.notebook.append_page(self._build_options_tab(), Gtk.Label(label="Options"))
+        self.notebook.append_page(self._build_models_tab(), Gtk.Label(label="Models"))
+        self.notebook.append_page(self._build_learn_tab(), Gtk.Label(label="Learn"))
+        self.notebook.append_page(self._build_setup_tab(), Gtk.Label(label="Setup"))
+        self.notebook.append_page(self._build_toy_tab(), Gtk.Label(label="Eddy Toy"))
+        self.notebook.connect("switch-page", self._on_page_switch)
+        self.win.set_content(self.notebook)
+        self.win.present()
+        
+        threading.Thread(target=self._monitor_services, daemon=True).start()
+
+        # Themes + the base floor. The stored theme (or the plain
+        # default) is proposed as the relationship on opening; the
+        # floor runs its wake beat now and its dwell beat from here
+        # on — reality intelligence alignment monitors, on wake and
+        # dwell only, nested in whatever theme is standing.
+        self.theme, _set_by = load_theme()
+        self._apply_theme_label()
+        # Self-maintenance stands up with the floor: generated
+        # explainers from earlier beats rejoin the registry, and
+        # the maintainer rides the wake/dwell beats as the
+        # floor's companion — never a third beat, never
+        # mid-conversation.
+        root = self._tree_root()
+        sm_state = os.path.join(root, "selfmaint")
+        gen_path = os.path.join(sm_state, "generated_explainers.json")
+        if os.path.exists(gen_path):
+            try:
+                with open(gen_path) as f:
+                    learn_mod.register_generated(json.load(f))
+            except Exception:
+                pass
+        self.maintainer = SelfMaintainer(root, state_dir=sm_state)
+        # The hybrid halves, from the standing role choice.
+        role = self.options.get("hybrid", "role")
+        if role in ("daughter", "hybrid"):
+            sd = hybrid_mod.default_state_dir()
+            host = self.options.get("hybrid", "parent_host") \
+                if role == "daughter" else "127.0.0.1"
+            self.daughter_runtime = hybrid_mod.DaughterRuntime(
+                self.options.get("hybrid", "daughter_id"),
+                hybrid_mod.ChainStore(sd / "daughter-chain.json"),
+                hybrid_mod.BriefQueue(sd / "daughter-queue.jsonl"),
+                host, self.options.get("hybrid", "parent_port"),
+                pair_secret=setup_mod.load_secret("pairing-secret"))
+        probe = self._daughters_probe \
+            if role in ("parent", "hybrid") else None
+        self.floor_monitor = FloorMonitor(
+            theme=self.theme,
+            interval=self.options.dwell_seconds(),
+            companion=self._beat_companion,
+            daughters_probe=probe)
+        threading.Thread(target=self.floor_monitor.wake,
+                         daemon=True).start()
+        self.floor_monitor.start()
+        self.connect("shutdown",
+                     lambda *_: self.floor_monitor
+                     and self.floor_monitor.stop())
+        self.win.connect("close-request", self._on_close)
+
+    def _on_close(self, *_args):
+        if self.toy_source is not None:
+            GLib.source_remove(self.toy_source)
+            self.toy_source = None
+        if self.floor_monitor is not None:
+            self.floor_monitor.stop()
+        return False
+
+    # --- Themes: the relationship the app proposes on opening ---
+
+    def _apply_theme_label(self):
+        if hasattr(self, "rel_label"):
+            self.rel_label.set_text(
+                f"Relationship: {self.theme['name']}")
+        if hasattr(self, "calc_theme_label"):
+            self.calc_theme_label.set_text(
+                f"Theme on opening: {self.theme['name']}")
+
+    def _set_theme(self, theme, set_by):
+        """Make a theme the standing one: persist it, stamp it into
+        the floor's snapshots, and show it as the relationship."""
+        self.theme = theme
+        save_theme(theme, set_by)
+        if self.floor_monitor is not None:
+            self.floor_monitor.theme = theme
+        self._apply_theme_label()
+
+    # --- Joy Calculator tab: explainers in, beginning depth out ---
+    # The back end absorbs each answer as it is given (see core/intake.py);
+    # all statement wording there is DRAFT, pending Zak's red pen.
+
+    def _build_calculator_tab(self):
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        vbox.set_margin_top(16); vbox.set_margin_bottom(16)
+        vbox.set_margin_start(16); vbox.set_margin_end(16)
+
+        self.calc_answers = {}
+        self.calc_index = 0
+        self.calc_entries = {}
+        self.calc_choices = {}
+        self.calc_skipped = set()
+        self.calc_done_sent = False
+        self.calc_resume_data = None
+        self.calc_writer = EngagementWriter(on_status=self._calc_on_status)
+
+        # The standing theme, and the plain default taken directly:
+        # "start plain" sets the Plain Chatbot & Reminders theme
+        # without a calculator run — a first-class default option,
+        # not a failure state. The base floor runs in it too.
+        theme_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                            spacing=8)
+        self.calc_theme_label = Gtk.Label(
+            label=f"Theme on opening: {self.theme['name']}")
+        self.calc_theme_label.set_xalign(0.0)
+        self.calc_theme_label.set_hexpand(True)
+        theme_row.append(self.calc_theme_label)
+        plain_btn = Gtk.Button(
+            label="Start plain — just a chatbot & reminders")
+        plain_btn.connect("clicked", self._calc_start_plain)
+        theme_row.append(plain_btn)
+        vbox.append(theme_row)
+
+        self.calc_progress = Gtk.Label(label="")
+        self.calc_progress.set_xalign(0.0)
+        vbox.append(self.calc_progress)
+
+        self.calc_teaser = Gtk.Label(label="")
+        self.calc_teaser.set_xalign(0.0)
+        self.calc_teaser.set_wrap(True)
+        vbox.append(self.calc_teaser)
+
+        self.calc_stack = Gtk.Stack()
+        self.calc_stack.set_vexpand(True)
+        for i, page in enumerate(PAGES):
+            self.calc_stack.add_named(self._build_calc_page(page), f"page-{i}")
+        self.calc_stack.add_named(self._build_calc_paused_page(), "paused")
+        vbox.append(self.calc_stack)
+
+        self.calc_live = Gtk.Label(label="Depth so far: nothing answered yet")
+        self.calc_live.set_xalign(0.0)
+        self.calc_live.set_wrap(True)
+        vbox.append(self.calc_live)
+
+        nav = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.calc_back_btn = Gtk.Button(label="Back")
+        self.calc_back_btn.connect("clicked", self._calc_back)
+        nav.append(self.calc_back_btn)
+        # Default mode: the exits are always in the row — Skip (this
+        # statement), End (read what we have), Finish later (keep my
+        # place). The nudge invites; the exits never hide.
+        self.calc_skip_btn = Gtk.Button(label="Skip")
+        self.calc_skip_btn.connect("clicked", self._calc_skip)
+        nav.append(self.calc_skip_btn)
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        nav.append(spacer)
+        self.calc_later_btn = Gtk.Button(label="Finish later")
+        self.calc_later_btn.connect("clicked", self._calc_finish_later)
+        nav.append(self.calc_later_btn)
+        self.calc_end_btn = Gtk.Button(label="End")
+        self.calc_end_btn.connect("clicked", self._calc_end)
+        nav.append(self.calc_end_btn)
+        self.calc_next_btn = Gtk.Button(label="Continue")
+        self.calc_next_btn.connect("clicked", self._calc_next)
+        nav.append(self.calc_next_btn)
+        vbox.append(nav)
+
+        self.calc_status = Gtk.Label(label=self.calc_writer.status_text())
+        self.calc_status.set_xalign(0.0)
+        vbox.append(self.calc_status)
+
+        # An unfinished session in the memory service gets offered
+        # back before anything else: pick up where you left off, or
+        # start over — your call, first thing.
+        pending = find_unfinished()
+        if pending:
+            self.calc_resume_data = pending
+            self.calc_stack.add_named(self._build_calc_offer_page(pending),
+                                      "offer")
+            self._calc_show_special("offer")
+        else:
+            self._calc_show_page(0)
+        return vbox
+
+    def _build_calc_paused_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        lbl = Gtk.Label(label="Saved. Your place is kept — the back end "
+                              "is holding what you've given it so far. "
+                              "Come back whenever; the rest of the "
+                              "statements will be right here.")
+        lbl.set_wrap(True)
+        lbl.set_xalign(0.0)
+        box.append(lbl)
+        btn = Gtk.Button(label="Pick it back up \u2192")
+        btn.connect("clicked", lambda *_: self._calc_show_page(self.calc_index))
+        box.append(btn)
+        return box
+
+    def _build_calc_offer_page(self, pending):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        answered = len(pending["answers"])
+        lbl = Gtk.Label(label=f"You left a Joy Calculator run unfinished "
+                              f"— {answered} statement"
+                              f"{'s' if answered != 1 else ''} answered "
+                              f"so far. Want to pick it back up where "
+                              f"you left off, or start over fresh?")
+        lbl.set_wrap(True)
+        lbl.set_xalign(0.0)
+        box.append(lbl)
+        resume_btn = Gtk.Button(label="Resume where I left off \u2192")
+        resume_btn.connect("clicked", self._calc_resume)
+        box.append(resume_btn)
+        over_btn = Gtk.Button(label="Start over")
+        over_btn.connect("clicked", self._calc_start_over)
+        box.append(over_btn)
+        return box
+
+    def _build_calc_page(self, page):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        kind = page["kind"]
+        if kind == "intro":
+            title = Gtk.Label()
+            title.set_markup(f"<b>{page['title']}</b>")
+            title.set_xalign(0.0)
+            box.append(title)
+            body = Gtk.Label(label=page["body"])
+            body.set_wrap(True)
+            body.set_xalign(0.0)
+            box.append(body)
+        elif kind == "text":
+            prompt = Gtk.Label(label=page["prompt"])
+            prompt.set_xalign(0.0)
+            box.append(prompt)
+            entry = Gtk.Entry()
+            entry.connect("activate", self._calc_next)
+            box.append(entry)
+            self.calc_entries[page["id"]] = entry
+        elif kind == "choice":
+            prompt = Gtk.Label(label=page["prompt"])
+            prompt.set_xalign(0.0)
+            box.append(prompt)
+            group = None
+            buttons = []
+            for opt in page["options"]:
+                btn = Gtk.CheckButton(label=opt["label"])
+                if group is not None:
+                    btn.set_group(group)
+                else:
+                    group = btn
+                box.append(btn)
+                buttons.append((btn, opt))
+            self.calc_choices[page["id"]] = buttons
+        elif kind == "statement":
+            text = Gtk.Label(label=page["text"])
+            text.set_wrap(True)
+            text.set_xalign(0.0)
+            box.append(text)
+            group = None
+            buttons = []
+            options = [{"label": "Agree", "weight": page["agree_pts"]},
+                       {"label": "Disagree", "weight": page["disagree_pts"]}]
+            for opt in options:
+                btn = Gtk.CheckButton(label=opt["label"])
+                if group is not None:
+                    btn.set_group(group)
+                else:
+                    group = btn
+                box.append(btn)
+                buttons.append((btn, opt))
+            self.calc_choices[page["id"]] = buttons
+        elif kind == "summary":
+            lbl = Gtk.Label(label="")
+            lbl.set_xalign(0.0)
+            lbl.set_wrap(True)
+            box.append(lbl)
+            self.calc_summary_label = lbl
+        return box
+
+    def _calc_start_plain(self, *_args):
+        # The default theme option, taken head-on: plain chatbot &
+        # reminders, no calculator run. The theme persists for the
+        # next opening, and the base floor runs in this theme
+        # exactly as in every other — wake and dwell only.
+        self._set_theme(DEFAULT_THEME, "plain-start")
+        self.calc_status.set_text(
+            "Theme set: Plain Chatbot & Reminders — and the base "
+            "floor still runs, on wake and dwell only.")
+
+    def _calc_on_status(self, text):
+        GLib.idle_add(self.calc_status.set_text, text)
+
+    def _calc_show_page(self, index):
+        self.calc_index = index
+        self.calc_stack.set_visible_child_name(f"page-{index}")
+        self.calc_progress.set_text(f"Step {index + 1} of {len(PAGES)}")
+        page = PAGES[index]
+        kind = page["kind"]
+        last = index == len(PAGES) - 1
+        self.calc_back_btn.set_visible(True)
+        self.calc_back_btn.set_sensitive(index > 0)
+        self.calc_next_btn.set_visible(not last)
+        self.calc_skip_btn.set_visible(kind == "statement")
+        self.calc_end_btn.set_visible(not last)
+        self.calc_later_btn.set_visible(not last)
+        # Curiosity-nudge copy (DRAFT): the Continue label and the
+        # teaser line invite the next page open; they never block the
+        # exits, which sit in the same row.
+        if kind == "intro":
+            self.calc_next_btn.set_label("Keep going \u2192")
+            self.calc_teaser.set_text("Here's the shape of it — the "
+                                      "statements come next.")
+        elif kind == "statement":
+            self.calc_next_btn.set_label("Next statement \u2192")
+            self.calc_teaser.set_text("One honest answer at a time — "
+                                      "the picture sharpens as you go.")
+        if kind == "summary":
+            self._calc_refresh_summary()
+
+    def _calc_collect(self, page):
+        """Return (answer, weight) for a question page, or None if blank."""
+        if page["kind"] == "text":
+            text = self.calc_entries[page["id"]].get_text().strip()
+            if not text:
+                return None
+            return text, page.get("points", 0)
+        if page["kind"] in ("choice", "statement"):
+            for btn, opt in self.calc_choices[page["id"]]:
+                if btn.get_active():
+                    return opt["label"], opt["weight"]
+            return None
+        return None
+
+    def _calc_next(self, *_args):
+        page = PAGES[self.calc_index]
+        if page["kind"] in ("text", "choice", "statement"):
+            got = self._calc_collect(page)
+            if got is not None:
+                answer, weight = got
+                self.calc_answers[page["id"]] = {"answer": answer, "weight": weight}
+                self.calc_skipped.discard(page["id"])
+                depth = compute_depth(self.calc_answers)
+                self.calc_writer.record(page["id"],
+                                        page.get("prompt", page.get("text", "")),
+                                        answer, weight=weight, profile=depth)
+                self._calc_refresh_live()
+        if self.calc_index < len(PAGES) - 1:
+            self._calc_show_page(self.calc_index + 1)
+
+    # --- Default mode exits: Skip / End / Finish later (always there) ---
+
+    def _calc_skip(self, *_args):
+        page = PAGES[self.calc_index]
+        if page["kind"] != "statement":
+            return
+        # A skip is data, streamed like any answer, marked "skipped";
+        # it carries no depth signal either way.
+        self.calc_skipped.add(page["id"])
+        self.calc_answers.pop(page["id"], None)
+        self.calc_writer.record_skip(page["id"], page["text"],
+                                     profile=compute_depth(self.calc_answers))
+        self._calc_refresh_live()
+        if self.calc_index < len(PAGES) - 1:
+            self._calc_show_page(self.calc_index + 1)
+
+    def _calc_end(self, *_args):
+        # Stop now: the summary reads whatever pattern exists so far.
+        self._calc_show_page(len(PAGES) - 1)
+
+    def _calc_finish_later(self, *_args):
+        self.calc_writer.save_progress(self.calc_index, self.calc_answers,
+                                       done=False)
+        self._calc_show_special("paused")
+
+    def _calc_show_special(self, name):
+        self.calc_stack.set_visible_child_name(name)
+        self.calc_progress.set_text("Paused" if name == "paused"
+                                    else "Welcome back")
+        self.calc_teaser.set_text("")
+        for btn in (self.calc_back_btn, self.calc_skip_btn,
+                    self.calc_end_btn, self.calc_later_btn,
+                    self.calc_next_btn):
+            btn.set_visible(False)
+
+    def _calc_resume(self, *_args):
+        if self.calc_resume_data:
+            data = self.calc_resume_data
+            self.calc_resume_data = None
+            # Continue the same backend session the marker names.
+            self.calc_writer = EngagementWriter(
+                session_id=data["session"],
+                on_status=self._calc_on_status)
+            self.calc_status.set_text(self.calc_writer.status_text())
+            self.calc_answers = {sid: {"answer": a}
+                                 for sid, a in data["answers"].items()}
+            for sid, a in self.calc_answers.items():
+                for btn, opt in self.calc_choices.get(sid, []):
+                    if opt["label"] == a["answer"]:
+                        btn.set_active(True)
+            self._calc_refresh_live()
+            self._calc_show_page(min(data["page_index"], len(PAGES) - 1))
+        else:
+            self._calc_show_page(self.calc_index)
+
+    def _calc_start_over(self, *_args):
+        if self.calc_resume_data:
+            # Close the stored session so it isn't offered again.
+            stale = EngagementWriter(
+                session_id=self.calc_resume_data["session"],
+                on_status=None)
+            stale.save_progress(0, {}, done=True)
+            self.calc_resume_data = None
+        self._calc_show_page(0)
+
+    def _calc_back(self, *_args):
+        if self.calc_index > 0:
+            self._calc_show_page(self.calc_index - 1)
+
+    def _calc_refresh_live(self):
+        depth = compute_depth(self.calc_answers)
+        if depth["answered"]:
+            self.calc_live.set_text(
+                f"Depth so far: {depth['level_name']} \u2014 {depth['score']} of "
+                f"{depth['max_score']} depth points, based on "
+                f"{depth['answered']} of {depth['total']} statements")
+        else:
+            self.calc_live.set_text("Depth so far: nothing answered yet")
+
+    def _calc_refresh_summary(self):
+        depth = compute_depth(self.calc_answers)
+        lines = [f"Where the relationship begins: {depth['level_name']}",
+                 depth["meaning"], ""]
+        lines += depth["lines"]
+        if depth["answered"] < depth["total"]:
+            lines += ["",
+                      f"A partial read is a shallower read: this depth "
+                      f"is based on {depth['answered']} of "
+                      f"{depth['total']} statements"
+                      + (f" ({len(self.calc_skipped)} skipped — a skip "
+                         f"says nothing either way)."
+                         if self.calc_skipped else ".")]
+        # The depth becomes the theme the app runs under — named
+        # here, persisted for the next opening, proposed there as
+        # the relationship.
+        theme = theme_for_level(depth["level"])
+        lines += ["",
+                  f"You begin under the {theme['name']} theme.",
+                  theme["behaves_as"],
+                  theme["floor_note"]]
+        lines += ["", depth["time_line"]]
+        self.calc_summary_label.set_text("\n".join(lines))
+        if self.calc_theme_level != theme["level"]:
+            self.calc_theme_level = theme["level"]
+            self._set_theme(theme, "calculator")
+        if not self.calc_done_sent:
+            self.calc_done_sent = True
+            self.calc_writer.save_progress(self.calc_index,
+                                           self.calc_answers, done=True)
+
+    # --- Options tab: grouped choices, each with its cost --------
+
+    def _opt_section(self, box, title, blurb=""):
+        frame = Gtk.Frame(label=title)
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                        spacing=6)
+        inner.set_margin_top(8); inner.set_margin_bottom(8)
+        inner.set_margin_start(10); inner.set_margin_end(10)
+        if blurb:
+            lbl = Gtk.Label(label=blurb)
+            lbl.set_wrap(True); lbl.set_xalign(0.0)
+            inner.append(lbl)
+        frame.set_child(inner)
+        box.append(frame)
+        return inner
+
+    def _opt_note_saved(self):
+        if self.options.persisted():
+            self.options_status.set_text(
+                "Saved to the memory service — it stands.")
+        else:
+            self.options_status.set_text(
+                "Held for this session (the memory service is "
+                "silent, so nothing was written).")
+
+    def _opt_choice(self, parent, label, values, current, on_pick,
+                    costs=None):
+        """One labeled choice row: a dropdown of values, each with
+        its one-line cost/effect shown beside it."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                      spacing=8)
+        lbl = Gtk.Label(label=label)
+        lbl.set_xalign(0.0); lbl.set_hexpand(True)
+        row.append(lbl)
+        store = Gtk.StringList.new([str(v) for v in values])
+        dd = Gtk.DropDown(model=store)
+        try:
+            dd.set_selected(values.index(current))
+        except ValueError:
+            pass
+        cost = Gtk.Label(label=(costs or {}).get(current, ""))
+        cost.set_xalign(0.0)
+
+        def _changed(d, _pspec):
+            value = values[d.get_selected()]
+            cost.set_text((costs or {}).get(value, ""))
+            on_pick(value)
+        dd.connect("notify::selected-item", _changed)
+        row.append(dd)
+        row.append(cost)
+        parent.append(row)
+        return dd
+
+    def _build_options_tab(self):
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                      spacing=12)
+        box.set_margin_top(14); box.set_margin_bottom(14)
+        box.set_margin_start(14); box.set_margin_end(14)
+        scroll.set_child(box)
+        o = self.options
+
+        self.options_status = Gtk.Label(label="")
+        self.options_status.set_xalign(0.0)
+        box.append(self.options_status)
+
+        # Relationship — the standing theme, set directly.
+        rel = self._opt_section(
+            box, "Relationship",
+            "The theme the app stands in. The Joy Calculator can "
+            "find it by questions; here it is a plain door.")
+        for theme in THEMES:
+            btn = Gtk.Button(
+                label=f"L{theme['level']} — {theme['name']}")
+            btn.set_tooltip_text(theme["behaves_as"])
+            btn.connect("clicked",
+                        lambda _b, t=theme: (
+                            self._set_theme(t, "options"),
+                            self.options_status.set_text(
+                                f"Theme: {t['name']} — "
+                                f"{t['behaves_as']}")))
+            rel.append(btn)
+
+        # Patience.
+        pat = self._opt_section(box, "Patience")
+        self._opt_choice(
+            pat, "Floor dwell interval (minutes)",
+            [5, 15, 30, 60], o.get("patience", "dwell_minutes"),
+            lambda v: (o.set("patience", "dwell_minutes", v),
+                       setattr(self.floor_monitor, "interval",
+                               o.dwell_seconds())
+                       if self.floor_monitor else None,
+                       self._opt_note_saved()),
+            costs={5: "attentive; more memory writes",
+                   15: "the standing rhythm",
+                   30: "quieter; slower to notice drift",
+                   60: "quietest; drift can sit an hour"})
+        self._opt_choice(
+            pat, "Turn timeout (seconds)",
+            [15, 30, 60, 120], o.get("patience", "turn_timeout_s"),
+            lambda v: (o.set("patience", "turn_timeout_s", v),
+                       self._opt_note_saved()),
+            costs={15: "impatient; deep asks may clip",
+                   30: "the standing value",
+                   60: "room for the reasoner",
+                   120: "slowest; nothing clips early"})
+        self._opt_choice(
+            pat, "Explainer dwell (ms)",
+            [300, 800, 1500],
+            o.get("patience", "explainer_dwell_ms"),
+            lambda v: (o.set("patience", "explainer_dwell_ms", v),
+                       self._apply_tooltip_timeout(),
+                       self._opt_note_saved()),
+            costs={300: "eager explainers",
+                   800: "the manners tick",
+                   1500: "explainers wait to be asked"})
+
+        # Cadence scaling.
+        cad = self._opt_section(box, "Cadence")
+        self._opt_choice(
+            cad, "Sidebar sense-cadence",
+            ["full", "polite", "quiet"], o.get("cadence",
+                                               "indicator"),
+            lambda v: (o.set("cadence", "indicator", v),
+                       setattr(self, "poll_seconds",
+                               o.indicator_seconds()),
+                       self._opt_note_saved()),
+            costs={"full": "a look every ~2.5 s",
+                   "polite": "a look every ~7.5 s",
+                   "quiet": "a look every ~15 s — calmest"})
+
+        # Senses — organs off take no new work; the floor still
+        # checks them.
+        sen = self._opt_section(
+            box, "Senses",
+            "Off = the organ takes no new work. The floor keeps "
+            "checking it either way.")
+        for name in SERVICE_PORTS:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=8)
+            lbl = Gtk.Label(label=name.capitalize())
+            lbl.set_xalign(0.0); lbl.set_hexpand(True)
+            row.append(lbl)
+            sw = Gtk.Switch()
+            sw.set_active(o.sense_live(name))
+            sw.connect("notify::active",
+                       lambda s, _p, n=name: (
+                           o.set("senses", n, s.get_active()),
+                           self._opt_note_saved()))
+            row.append(sw)
+            sen.append(row)
+
+        # Redundancy + cloud posture.
+        red = self._opt_section(box, "Redundancy")
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                      spacing=8)
+        lbl = Gtk.Label(label="Announce degradation")
+        lbl.set_xalign(0.0); lbl.set_hexpand(True)
+        row.append(lbl)
+        sw = Gtk.Switch()
+        sw.set_active(o.get("redundancy", "degradation_notices"))
+        sw.connect("notify::active",
+                   lambda s, _p: (
+                       o.set("redundancy", "degradation_notices",
+                             s.get_active()),
+                       self._opt_note_saved()))
+        row.append(sw)
+        red.append(row)
+        self._opt_choice(
+            red, "Cloud answers",
+            ["never", "draft", "allowed"], o.get("cloud", "policy"),
+            lambda v: (o.set("cloud", "policy", v),
+                       self._opt_note_saved()),
+            costs={"never": "local only — the floor row rules",
+                   "draft": "cloud may draft; labeled on its face",
+                   "allowed": "cloud may answer, inside budget"})
+        self._opt_choice(
+            red, "Cloud session budget",
+            [0, 10, 25, None], o.get("cloud", "session_budget"),
+            lambda v: (o.set("cloud", "session_budget", v),
+                       self._opt_note_saved()),
+            costs={0: "no cloud answers this session",
+                   10: "a handful of drafts",
+                   25: "a working afternoon",
+                   None: "no cap — the policy still applies"})
+
+        # Self-maintenance — fills with receipts, proposals
+        # waiting. Plain, and not on the calm surface.
+        sm = self._opt_section(
+            box, "Self-maintenance",
+            "On wake and dwell the app censuses its own declared "
+            "surfaces, repairs what is mechanical (with backups "
+            "and receipts), and files the rest as proposals for "
+            "the owner's red pen. Nothing here runs "
+            "mid-conversation.")
+        self.selfmaint_label = Gtk.Label(label="No census yet — "
+                                               "the first beat "
+                                               "brings one.")
+        self.selfmaint_label.set_wrap(True)
+        self.selfmaint_label.set_xalign(0.0)
+        sm.append(self.selfmaint_label)
+        sm_btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=8)
+        refresh = Gtk.Button(label="Refresh")
+        refresh.connect("clicked",
+                        lambda _b: self._refresh_selfmaint_label())
+        sm_btns.append(refresh)
+        view = Gtk.Button(label="View proposals")
+        view.connect("clicked", self._on_view_proposals)
+        sm_btns.append(view)
+        sm.append(sm_btns)
+
+        # Role & daughters — the hybrid door.
+        hy = self._opt_section(
+            box, "Role & daughters",
+            "One install, three shapes. Role changes apply on "
+            "the next start — the halves are built as the app "
+            "wakes.")
+        self._opt_choice(
+            hy, "Role",
+            ["parent", "daughter", "hybrid"],
+            o.get("hybrid", "role"),
+            lambda v: (o.set("hybrid", "role", v),
+                       self.options_status.set_text(
+                           "Role saved — it takes its shape on "
+                           "the next start.")),
+            costs={"parent": "full app; receives briefs",
+                   "daughter": "senses + briefs, tiny footprint",
+                   "hybrid": "both on one box — the self-test "
+                             "shape"})
+        for key, label in (("daughter_id", "Daughter id"),
+                           ("parent_host", "Parent host")):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=8)
+            lbl = Gtk.Label(label=label)
+            lbl.set_xalign(0.0); lbl.set_hexpand(True)
+            row.append(lbl)
+            ent = Gtk.Entry()
+            ent.set_text(str(o.get("hybrid", key)))
+            ent.connect("changed",
+                        lambda e, k=key: o.set("hybrid", k,
+                                               e.get_text()))
+            row.append(ent)
+            hy.append(row)
+        self._opt_choice(
+            hy, "Daughter brief stale after (minutes)",
+            [15, 30, 45, 90], o.get("hybrid", "stale_minutes"),
+            lambda v: (o.set("hybrid", "stale_minutes", v),
+                       self._opt_note_saved()),
+            costs={15: "tight watch", 30: "attentive",
+                   45: "the standing value", 90: "patient"})
+        self.daughters_label = Gtk.Label(label="")
+        self.daughters_label.set_wrap(True)
+        self.daughters_label.set_xalign(0.0)
+        hy.append(self.daughters_label)
+        d_btn = Gtk.Button(label="Refresh daughters")
+        d_btn.connect("clicked",
+                      lambda _b: self._refresh_daughters_label())
+        hy.append(d_btn)
+        self._refresh_daughters_label()
+
+        # Editors — plain text, validate before save.
+        ed = self._opt_section(
+            box, "Editors",
+            "The config is a plug, not plumbing: edit it as "
+            "text, validate against the live services, then "
+            "save. The shell service's posture lives in its own "
+            "code in v1 — the editable surface is config.json.")
+        cfg_btn = Gtk.Button(label="Edit config.json (app + MCP)")
+        cfg_btn.connect("clicked",
+                        lambda _b: self._open_config_editor())
+        ed.append(cfg_btn)
+        return scroll
+
+    def _refresh_selfmaint_label(self):
+        if not hasattr(self, "selfmaint_label"):
+            return False
+        m = self.maintainer
+        if m is None or m.last_result is None:
+            self.selfmaint_label.set_text(
+                "No census yet — the first beat brings one.")
+            return False
+        r = m.last_result
+        self.selfmaint_label.set_text(
+            f"Last census ({r['beat']} beat, {r['ts']}): "
+            f"{len(r['findings'])} finding(s), "
+            f"{len(r['fills'])} fill(s) applied with receipts, "
+            f"{len(r['proposals_waiting'])} proposal(s) waiting "
+            f"for the red pen.")
+        return False
+
+    def _refresh_daughters_label(self):
+        if not hasattr(self, "daughters_label"):
+            return
+        try:
+            daughters = hybrid_mod.read_daughters(
+                pair_secret=setup_mod.load_secret("pairing-secret"),
+                stale_minutes=self.options.get(
+                    "hybrid", "stale_minutes"))
+        except Exception:
+            daughters = {}
+        if not daughters:
+            self.daughters_label.set_text(
+                "No daughters paired yet — pair one from the "
+                "Setup door.")
+            return
+        lines = []
+        for did, d in sorted(daughters.items()):
+            age = d["age_s"]
+            lines.append(
+                f"{did}: last brief "
+                f"{'?' if age is None else int(age)}s ago"
+                f"{' (stale)' if d['stale'] else ''} · "
+                f"pair {'verified' if d['verified'] else 'unverified'}"
+                f" · chain {'ok' if d['chain_ok'] else 'BROKEN'}"
+                f" · head {d['entry']['hash'][:12]}")
+        self.daughters_label.set_text("\n".join(lines))
+
+    def _on_view_proposals(self, btn):
+        m = self.maintainer
+        names = waiting_proposals(m.state_dir) \
+            if m is not None else []
+        dialog = Gtk.Dialog(title="Self-maintenance proposals",
+                            transient_for=self.win, modal=True)
+        dialog.set_default_size(560, 420)
+        area = dialog.get_content_area()
+        text = ("No proposals waiting — the census found nothing "
+                "beyond the mechanical."
+                if not names else "")
+        if names:
+            first = os.path.join(str(m.state_dir), "proposals",
+                                 names[0])
+            try:
+                with open(first) as f:
+                    text = (f"Waiting ({len(names)}): "
+                            + ", ".join(names)
+                            + f"\n\n--- {names[0]} ---\n\n"
+                            + f.read())
+            except OSError as e:
+                text = f"Waiting: {', '.join(names)}\n\n({e})"
+        view = Gtk.TextView()
+        view.set_editable(False)
+        view.set_wrap_mode(Gtk.WrapMode.WORD)
+        view.get_buffer().set_text(text)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_vexpand(True)
+        scroller.set_child(view)
+        area.append(scroller)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.connect("response", lambda d, _r: d.destroy())
+        dialog.present()
+
+    def _open_config_editor(self):
+        path = os.path.join(os.path.dirname(__file__), "..",
+                            "config.json")
+        try:
+            with open(path) as f:
+                initial = f.read()
+        except OSError:
+            initial = "{}"
+        dialog = Gtk.Dialog(title="config.json — validate, "
+                                  "then save",
+                            transient_for=self.win, modal=True)
+        dialog.set_default_size(620, 480)
+        area = dialog.get_content_area()
+        view = Gtk.TextView()
+        view.set_monospace(True)
+        view.get_buffer().set_text(initial)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_vexpand(True)
+        scroller.set_child(view)
+        area.append(scroller)
+        status = Gtk.Label(label="Validate runs the wire "
+                                 "protocol against the live "
+                                 "services before a save is "
+                                 "allowed.")
+        status.set_wrap(True); status.set_xalign(0.0)
+        area.append(status)
+
+        def _text():
+            buf = view.get_buffer()
+            return buf.get_text(buf.get_start_iter(),
+                                buf.get_end_iter(), False)
+
+        def _validate(_b):
+            ok, problems = setup_mod.validate_config_text(_text())
+            lines = setup_mod.probe_config_ports(_text())
+            status.set_text(
+                ("Valid. " if ok else
+                 "Problems: " + "; ".join(problems) + " ")
+                + "\n".join(lines))
+            return ok
+
+        val_btn = Gtk.Button(label="Validate")
+        val_btn.connect("clicked", _validate)
+        area.append(val_btn)
+
+        def _save(_b):
+            ok, problems = setup_mod.validate_config_text(_text())
+            if not ok:
+                status.set_text("Not saved — problems: "
+                                + "; ".join(problems))
+                return
+            try:
+                with open(path + ".bak", "w") as f:
+                    f.write(initial)
+                with open(path, "w") as f:
+                    f.write(_text())
+                status.set_text(
+                    "Saved (previous text kept at "
+                    "config.json.bak). Some values take their "
+                    "effect on the next start.")
+            except OSError as e:
+                status.set_text(f"Save failed: {e}")
+
+        save_btn = Gtk.Button(label="Save")
+        save_btn.connect("clicked", _save)
+        area.append(save_btn)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.connect("response", lambda d, _r: d.destroy())
+        dialog.present()
+
+    # --- Models tab: stacks per slot, from any angle -------------
+
+    def _build_models_tab(self):
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                      spacing=12)
+        box.set_margin_top(14); box.set_margin_bottom(14)
+        box.set_margin_start(14); box.set_margin_end(14)
+        scroll.set_child(box)
+        intro = Gtk.Label(
+            label="Each slot is a stack: the first entry that "
+                  "answers serves, the rest are the fallback "
+                  "order — shown, never hidden. Entries come "
+                  "from Ollama discovery or any OpenAI-compatible "
+                  "endpoint. Only the chat slot has a caller "
+                  "today; reason and summarizer stacks stand "
+                  "ready for theirs.")
+        intro.set_wrap(True); intro.set_xalign(0.0)
+        box.append(intro)
+        self.models_status = Gtk.Label(label="")
+        self.models_status.set_xalign(0.0)
+        box.append(self.models_status)
+        for slot in model_stacks.SLOTS:
+            frame = Gtk.Frame(
+                label=model_stacks.SLOT_TITLES[slot])
+            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                            spacing=6)
+            inner.set_margin_top(8); inner.set_margin_bottom(8)
+            inner.set_margin_start(10); inner.set_margin_end(10)
+            frame.set_child(inner)
+            box.append(frame)
+            rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                           spacing=4)
+            inner.append(rows)
+            self.slot_rows[slot] = rows
+            add = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=6)
+            url_e = Gtk.Entry()
+            url_e.set_placeholder_text(
+                "https://…/v1  (endpoint) — or leave empty")
+            model_e = Gtk.Entry()
+            model_e.set_placeholder_text("model name")
+            key_e = Gtk.Entry()
+            key_e.set_placeholder_text("API key (optional)")
+            key_e.set_visibility(False)
+            add_btn = Gtk.Button(label="Add entry")
+            add_btn.connect(
+                "clicked", self._on_slot_add, slot,
+                url_e, model_e, key_e)
+            add.append(url_e); add.append(model_e)
+            add.append(key_e); add.append(add_btn)
+            inner.append(add)
+            self.slot_add[slot] = (url_e, model_e, key_e)
+            self._render_slot(slot)
+        disc = Gtk.Button(label="Add all discovered Ollama "
+                                "models to the chat stack")
+        disc.connect("clicked", self._on_discover_add)
+        box.append(disc)
+        probe = Gtk.Button(label="Probe every entry (statuses)")
+        probe.connect("clicked", self._on_probe_stacks)
+        box.append(probe)
+        return scroll
+
+    def _render_slot(self, slot):
+        box = self.slot_rows.get(slot)
+        if box is None:
+            return
+        child = box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            box.remove(child)
+            child = nxt
+        entries = (self.stacks or {}).get(slot, [])
+        if not entries:
+            lbl = Gtk.Label(label="(empty — add an entry below)")
+            lbl.set_xalign(0.0)
+            box.append(lbl)
+            return
+        for i, entry in enumerate(entries):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=6)
+            status = self.stack_status.get((slot, i), "")
+            lbl = Gtk.Label(
+                label=f"{i + 1}. "
+                      f"{model_stacks.entry_label(entry)}"
+                      + (f"  — {status}" if status else ""))
+            lbl.set_xalign(0.0); lbl.set_hexpand(True)
+            row.append(lbl)
+            up = Gtk.Button(label="↑")
+            up.set_sensitive(i > 0)
+            up.connect("clicked", self._on_slot_move, slot, i, -1)
+            row.append(up)
+            rm = Gtk.Button(label="✕")
+            rm.connect("clicked", self._on_slot_remove, slot, i)
+            row.append(rm)
+            box.append(row)
+
+    def _save_stacks_and_render(self):
+        model_stacks.save_stacks(self.stacks)
+        for slot in model_stacks.SLOTS:
+            self._render_slot(slot)
+        self.models_status.set_text(
+            "Stacks saved to the memory service.")
+
+    def _on_slot_add(self, btn, slot, url_e, model_e, key_e):
+        url = url_e.get_text().strip()
+        model = model_e.get_text().strip()
+        if not model and not url:
+            self.models_status.set_text(
+                "An entry needs at least a model name (Ollama) "
+                "or an endpoint + model.")
+            return
+        if url:
+            entry = {"kind": "openai", "base_url": url.rstrip("/"),
+                     "model": model}
+            key = key_e.get_text().strip()
+            if key:
+                entry["api_key"] = key
+        else:
+            entry = {"kind": "ollama", "model": model}
+        self.stacks[slot].append(entry)
+        url_e.set_text(""); model_e.set_text(""); key_e.set_text("")
+        self._save_stacks_and_render()
+
+    def _on_slot_move(self, btn, slot, i, delta):
+        entries = self.stacks[slot]
+        j = i + delta
+        if 0 <= j < len(entries):
+            entries[i], entries[j] = entries[j], entries[i]
+            self._save_stacks_and_render()
+
+    def _on_slot_remove(self, btn, slot, i):
+        del self.stacks[slot][i]
+        self._save_stacks_and_render()
+
+    def _on_discover_add(self, btn):
+        found = model_stacks.discover_ollama()
+        have = {e.get("model") for e in self.stacks["chat"]
+                if e.get("kind") == "ollama"}
+        added = 0
+        for name in found:
+            if name not in have:
+                self.stacks["chat"].append(
+                    {"kind": "ollama", "model": name})
+                added += 1
+        self.models_status.set_text(
+            f"Ollama discovery: {len(found)} model(s) present, "
+            f"{added} new entr(ies) added to the chat stack.")
+        self._save_stacks_and_render()
+
+    def _on_probe_stacks(self, btn):
+        def work():
+            for slot in model_stacks.SLOTS:
+                for i, entry in enumerate(
+                        self.stacks.get(slot, [])):
+                    probe = model_stacks.probe_entry(entry)
+                    self.stack_status[(slot, i)] = probe["state"]
+            GLib.idle_add(self._render_all_slots)
+        threading.Thread(target=work, daemon=True).start()
+        self.models_status.set_text("Probing…")
+
+    def _render_all_slots(self):
+        for slot in model_stacks.SLOTS:
+            self._render_slot(slot)
+        self.models_status.set_text("Probe complete.")
+        return False
+
+    # --- Learn tab: the back story, in three reading layers ------
+
+    def _build_learn_tab(self):
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                       spacing=10)
+        vbox.set_margin_top(14); vbox.set_margin_start(14)
+        vbox.set_margin_end(14)
+        toggle_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                             spacing=6)
+        intro = Gtk.Label(
+            label="Reading layer — the same words, three depths. "
+                  "Explainers everywhere in the app read at this "
+                  "layer too.")
+        intro.set_wrap(True); intro.set_xalign(0.0)
+        intro.set_hexpand(True)
+        toggle_row.append(intro)
+        self.layer_buttons = {}
+        group = None
+        for layer in learn_mod.LAYERS:
+            btn = Gtk.ToggleButton(
+                label=learn_mod.LAYER_NAMES[layer])
+            if group is None:
+                group = btn
+            else:
+                btn.set_group(group)
+            btn.set_active(layer == self.layer)
+            btn.connect("toggled", self._on_layer_toggled, layer)
+            toggle_row.append(btn)
+            self.layer_buttons[layer] = btn
+        vbox.append(toggle_row)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        self.learn_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        self.learn_box.set_margin_start(4)
+        self.learn_box.set_margin_end(4)
+        self.learn_box.set_margin_bottom(14)
+        scroll.set_child(self.learn_box)
+        vbox.append(scroll)
+        self._render_learn()
+        return vbox
+
+    def _on_layer_toggled(self, btn, layer):
+        if btn.get_active():
+            self.layer = layer
+            self._render_learn()
+
+    def _render_learn(self):
+        if self.learn_box is None:
+            return
+        child = self.learn_box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self.learn_box.remove(child)
+            child = nxt
+        for sec in learn_mod.SECTIONS:
+            title = Gtk.Label(label=sec["title"])
+            title.set_xalign(0.0)
+            title.add_css_class("title-4")
+            self.learn_box.append(title)
+            body = Gtk.Label(
+                label=sec.get(self.layer) or sec["plain"])
+            body.set_wrap(True); body.set_xalign(0.0)
+            self.learn_box.append(body)
+
+    # --- Setup tab: the bootstrap door ---------------------------
+    # Plan first, cost up front, privilege by gradient. Nothing
+    # here runs until its button is pressed; nothing runs at
+    # all during development on this machine.
+
+    def _build_setup_tab(self):
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                      spacing=12)
+        box.set_margin_top(14); box.set_margin_bottom(14)
+        box.set_margin_start(14); box.set_margin_end(14)
+        scroll.set_child(box)
+        st = self.setup_state
+        st.setdefault("choices", {
+            "mode": "home", "brain": "ollama", "network": "local",
+            "api_tiers": False, "chat_doors": False, "pair": True,
+            "role": self.options.get("hybrid", "role")})
+        st.setdefault("next", 0)
+        ch = st["choices"]
+
+        intro = Gtk.Label(
+            label="First run on a fresh box: arrive → look → "
+                  "announce the cost → consent, by gradient → "
+                  "thread itself through → pair → breathe (the "
+                  "wake/dwell floor takes over). Looking is "
+                  "read-only; the plan announces disk, downloads, "
+                  "time, network and money before anything runs.")
+        intro.set_wrap(True); intro.set_xalign(0.0)
+        intro.set_tooltip_text(learn_mod.explainer("setup",
+                                                   "plain"))
+        box.append(intro)
+
+        look = self._opt_section(box, "1 · Look (read-only)")
+        self.setup_profile_label = Gtk.Label(
+            label="Not inspected yet.")
+        self.setup_profile_label.set_wrap(True)
+        self.setup_profile_label.set_xalign(0.0)
+        look.append(self.setup_profile_label)
+        inspect_btn = Gtk.Button(label="Inspect this box")
+        inspect_btn.connect("clicked", self._on_setup_inspect)
+        look.append(inspect_btn)
+
+        plan_box = self._opt_section(box, "2 · The plan")
+        self._opt_choice(
+            plan_box, "Install mode", ["home", "system"],
+            ch["mode"],
+            lambda v: ch.__setitem__("mode", v),
+            costs={"home": "HOME FOLDER MINIMUM — everything "
+                           "under ~/ai-core, no system changes",
+                   "system": "/opt + systemd units; more sudo "
+                             "steps, named one by one"})
+        self._opt_choice(
+            plan_box, "Local brain", ["ollama", "llamacpp", "none"],
+            ch["brain"],
+            lambda v: ch.__setitem__("brain", v),
+            costs={"ollama": "simplest install; models as named "
+                             "downloads",
+                   "llamacpp": "llama.cpp router build; compiles "
+                               "on the box",
+                   "none": "no local brain — endpoints only"})
+        self._opt_choice(
+            plan_box, "Network bind", ["local", "lan", "tailnet"],
+            ch["network"],
+            lambda v: ch.__setitem__("network", v),
+            costs={"local": "loopback only — nothing leaves "
+                            "the box",
+                   "lan": "LAN reachable — a named boundary "
+                          "change",
+                   "tailnet": "Tailscale install + your browser "
+                              "sign-in, as named steps"})
+        self._opt_choice(
+            plan_box, "Role", ["parent", "daughter", "hybrid"],
+            ch["role"],
+            lambda v: ch.__setitem__("role", v),
+            costs={"parent": "full app",
+                   "daughter": "senses + briefs, tiny footprint",
+                   "hybrid": "both on one box"})
+        for key, label in (("api_tiers", "Add API tier plugs "
+                                         "(redundancy)"),
+                           ("chat_doors", "Guided chat doors "
+                                          "(Telegram / Discord)"),
+                           ("pair", "Pair an agent (SSH pairer)")):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=8)
+            lbl = Gtk.Label(label=label)
+            lbl.set_xalign(0.0); lbl.set_hexpand(True)
+            row.append(lbl)
+            sw = Gtk.Switch()
+            sw.set_active(bool(ch[key]))
+            sw.connect("notify::active",
+                       lambda s, _p, k=key: ch.__setitem__(
+                           k, s.get_active()))
+            row.append(sw)
+            plan_box.append(row)
+        self._opt_choice(
+            plan_box, "Privilege comfort level",
+            [0, 1, 2, 3], st["level"],
+            lambda v: st.__setitem__("level", v),
+            costs={0: "look only — nothing runs",
+                   1: "user-space changes only",
+                   2: "ask me per sudo step, exact command "
+                      "shown first",
+                   3: "standing grant for this setup session "
+                      "only"})
+        build_btn = Gtk.Button(label="Build the plan")
+        build_btn.connect("clicked", self._on_setup_build)
+        plan_box.append(build_btn)
+        self.setup_plan_label = Gtk.Label(label="")
+        self.setup_plan_label.set_wrap(True)
+        self.setup_plan_label.set_xalign(0.0)
+        plan_box.append(self.setup_plan_label)
+        self.setup_steps_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        plan_box.append(self.setup_steps_box)
+
+        run_box = self._opt_section(
+            box, "3 · Thread it through (one step at a time)")
+        self.setup_status = Gtk.Label(
+            label="No steps run. A failed step stops the "
+                  "thread and says why.")
+        self.setup_status.set_wrap(True)
+        self.setup_status.set_xalign(0.0)
+        run_box.append(self.setup_status)
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=8)
+        script_btn = Gtk.Button(label="Print the script "
+                                      "(dry run)")
+        script_btn.connect("clicked", self._on_setup_script)
+        btn_row.append(script_btn)
+        next_btn = Gtk.Button(label="Run next step")
+        next_btn.connect("clicked", self._on_setup_next)
+        btn_row.append(next_btn)
+        run_box.append(btn_row)
+
+        pair_box = self._opt_section(
+            box, "4 · Pair an agent (at least one: Muse)",
+            "Pairing is a button you press, with the key's "
+            "fingerprint in front of you. The pairer installs a "
+            "pasted public key into authorized_keys restricted "
+            "to the tailnet range — it never generates trust "
+            "silently.")
+        self.pair_key_entry = Gtk.Entry()
+        self.pair_key_entry.set_placeholder_text(
+            "Paste a public key line (ssh-ed25519 AAAA… label)")
+        self.pair_key_entry.connect("changed",
+                                    self._on_pair_key_changed)
+        pair_box.append(self.pair_key_entry)
+        self.pair_fp_label = Gtk.Label(label="Fingerprint: —")
+        self.pair_fp_label.set_xalign(0.0)
+        pair_box.append(self.pair_fp_label)
+        pair_btn = Gtk.Button(label="Write the pairer script")
+        pair_btn.connect("clicked", self._on_write_pairer)
+        pair_box.append(pair_btn)
+        secret_btn = Gtk.Button(
+            label="Generate the daughter pairing secret "
+                  "(shown once)")
+        secret_btn.connect("clicked", self._on_pair_secret)
+        pair_box.append(secret_btn)
+        self.pair_status = Gtk.Label(label="")
+        self.pair_status.set_wrap(True)
+        self.pair_status.set_xalign(0.0)
+        pair_box.append(self.pair_status)
+
+        doors = self._opt_section(
+            box, "Chat doors (guided-manual)",
+            "Guided-manual, honestly: the app explains what to "
+            "create (a bot via BotFather for Telegram; an "
+            "application + bot in Discord's developer portal), "
+            "takes the token into local config, and writes the "
+            "gateway config. It does NOT sign you up anywhere.")
+        for name in ("telegram", "discord"):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=8)
+            ent = Gtk.Entry()
+            ent.set_placeholder_text(f"{name} bot token")
+            ent.set_visibility(False)
+            ent.set_hexpand(True)
+            row.append(ent)
+            btn = Gtk.Button(label=f"Save {name} token")
+            btn.connect("clicked", self._on_save_door_token,
+                        name, ent)
+            row.append(btn)
+            doors.append(row)
+        self.doors_status = Gtk.Label(label="")
+        self.doors_status.set_xalign(0.0)
+        doors.append(self.doors_status)
+        return scroll
+
+    def _on_setup_inspect(self, btn):
+        def work():
+            profile = setup_mod.detect_profile()
+            self._profile = profile
+            self.setup_state["profile"] = profile
+            GLib.idle_add(self._render_profile)
+        threading.Thread(target=work, daemon=True).start()
+        self.setup_profile_label.set_text("Looking… (read-only)")
+
+    def _render_profile(self):
+        p = self.setup_state.get("profile") or {}
+        rec = setup_mod.recommend_models(p) if p else {}
+        gpu = p.get("gpu") or {}
+        lines = [
+            f"{p.get('os_id', '?')} · package manager "
+            f"{p.get('pkg_mgr', '?')} · {p.get('cores', '?')} "
+            f"cores · {p.get('ram_gb', '?')} GB RAM · GPU "
+            f"{gpu.get('name') or 'none detected'}"
+            + (f" ({gpu['vram_gb']} GB VRAM)"
+               if gpu.get("vram_gb") else "")
+            + f" · {p.get('disk_free_gb', '?')} GB free · home "
+              f"{p.get('home', '?')}",
+        ]
+        if rec:
+            lines.append(
+                "Sized for this box (estimates — measured speed "
+                "replaces them after install):")
+            for slot in ("chat", "reason", "summarizer"):
+                lines.append(f"  {slot}: {rec[slot]['model']} — "
+                             f"{rec[slot]['why']}")
+        self.setup_profile_label.set_text("\n".join(lines))
+        return False
+
+    def _on_setup_build(self, btn):
+        profile = self.setup_state.get("profile")
+        if profile is None:
+            self.setup_plan_label.set_text(
+                "Inspect first — a plan without a look is a "
+                "guess.")
+            return
+        plan = setup_mod.build_plan(
+            profile, dict(self.setup_state["choices"]),
+            src_dir=self._tree_root())
+        self.setup_state["plan"] = plan
+        self.setup_state["next"] = 0
+        t = plan["totals"]
+        lim = plan["limits"]
+        d, a = lim["declared"], lim["actual"]
+        self.setup_plan_label.set_text(
+            f"Cost up front: ~{t['disk_gb']} GB disk, "
+            f"~{t['download_gb']} GB downloads, ~{t['minutes']} "
+            f"minutes, {t['network_steps']} step(s) need the "
+            f"network. Money: {t['money']}\n"
+            f"{plan['footprint']}\n"
+            f"Floor row (minimums, measured precedent): chat "
+            f"{plan['minimums']['chat']}; "
+            f"{plan['minimums']['evidence']}.\n"
+            f"Declared limits: chat {d['chat_model']}, reason "
+            f"{d['reason_model']}, mode {d['mode']}, network "
+            f"{d['network']}.\n"
+            f"Actual limits on this box: {a['cores']} cores, "
+            f"{a['ram_gb']} GB RAM, ~{a['usable_gb']} GB usable "
+            f"({a['basis']}), {a['disk_free_gb']} GB free.\n"
+            f"Rule: {lim['rule']}")
+        self._render_plan_steps()
+
+    def _render_plan_steps(self):
+        box = self.setup_steps_box
+        child = box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            box.remove(child)
+            child = nxt
+        plan = self.setup_state.get("plan")
+        if not plan:
+            return
+        runnable, held = setup_mod.steps_for_level(
+            plan, self.setup_state["level"])
+        held_ids = {s["id"] for s in held}
+        for s in plan["steps"]:
+            mark = "HELD at this level" if s["id"] in held_ids \
+                else s["needs"]
+            lbl = Gtk.Label(
+                label=f"· {s['title']} [{mark}]"
+                      + (f" — {s['note']}" if s.get("note")
+                         else ""))
+            lbl.set_wrap(True); lbl.set_xalign(0.0)
+            box.append(lbl)
+
+    def _on_setup_script(self, btn):
+        plan = self.setup_state.get("plan")
+        if not plan:
+            self.setup_status.set_text(
+                "Build the plan first — the script is the plan, "
+                "printed.")
+            return
+        dialog = Gtk.Dialog(title="Dry run — the whole plan as "
+                                  "a script",
+                            transient_for=self.win, modal=True)
+        dialog.set_default_size(640, 480)
+        view = Gtk.TextView()
+        view.set_editable(False)
+        view.set_monospace(True)
+        view.get_buffer().set_text(setup_mod.render_script(
+            plan, self.setup_state["level"]))
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_vexpand(True)
+        scroller.set_child(view)
+        dialog.get_content_area().append(scroller)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.connect("response", lambda d, _r: d.destroy())
+        dialog.present()
+
+    def _on_setup_next(self, btn):
+        plan = self.setup_state.get("plan")
+        if not plan:
+            self.setup_status.set_text("Build the plan first.")
+            return
+        level = self.setup_state["level"]
+        if level == 0:
+            self.setup_status.set_text(
+                "Level 0 is look-only — raise the comfort level "
+                "to run steps.")
+            return
+        runnable, _held = setup_mod.steps_for_level(plan, level)
+        idx = self.setup_state["next"]
+        if idx >= len(runnable):
+            self.setup_status.set_text(
+                "Thread complete at this level — held steps are "
+                "listed in the plan, waiting on a higher level.")
+            return
+        step = runnable[idx]
+        if step["needs"] == "sudo" and level == 2:
+            self._confirm_sudo_step(step)
+            return
+        self._run_setup_step(step)
+
+    def _confirm_sudo_step(self, step):
+        dialog = Gtk.Dialog(
+            title="A sudo step — the exact commands",
+            transient_for=self.win, modal=True)
+        area = dialog.get_content_area()
+        lbl = Gtk.Label(
+            label=f"{step['title']}\n\n"
+                  + "\n".join(step["commands"])
+                  + "\n\nNothing else runs. Your call.")
+        lbl.set_wrap(True); lbl.set_xalign(0.0)
+        area.append(lbl)
+        dialog.add_button("Don't run it", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Run exactly this",
+                          Gtk.ResponseType.ACCEPT)
+
+        def _resp(d, r):
+            d.destroy()
+            if r == Gtk.ResponseType.ACCEPT:
+                self._run_setup_step(step)
+            else:
+                self.setup_status.set_text(
+                    f"Skipped by you: {step['title']}. The "
+                    f"thread waits.")
+        dialog.connect("response", _resp)
+        dialog.present()
+
+    def _run_setup_step(self, step):
+        self.setup_state["next"] += 1
+        if step.get("kind") != "run" or not step["commands"]:
+            self.setup_state["receipts"].append({
+                "step": step["id"], "kind": step.get("kind"),
+                "result": "guided/config — completed by hand, "
+                          "marked so"})
+            self.setup_status.set_text(
+                f"{step['title']}: guided/config step — its "
+                f"note in the plan is the instruction; marked "
+                f"done by hand.")
+            return
+
+        def work():
+            codes = []
+            for cmd in step["commands"]:
+                proc = subprocess.run(cmd, shell=True,
+                                      capture_output=True,
+                                      text=True, timeout=1800)
+                codes.append(proc.returncode)
+                if proc.returncode != 0:
+                    tail = (proc.stderr or proc.stdout or "")[-300:]
+                    self.setup_state["receipts"].append({
+                        "step": step["id"], "codes": codes,
+                        "failed": cmd, "tail": tail})
+                    GLib.idle_add(
+                        self.setup_status.set_text,
+                        f"Stopped at {step['title']}: `{cmd}` "
+                        f"exited {proc.returncode}. {tail} — "
+                        f"retry, skip, or abort from here; "
+                        f"nothing else ran.")
+                    return
+            self.setup_state["receipts"].append({
+                "step": step["id"], "codes": codes,
+                "result": "ok"})
+            GLib.idle_add(
+                self.setup_status.set_text,
+                f"Done: {step['title']} (exit codes {codes}). "
+                f"Receipt kept; next step waits for its "
+                f"button.")
+        threading.Thread(target=work, daemon=True).start()
+        self.setup_status.set_text(f"Running: {step['title']}…")
+
+    def _on_pair_key_changed(self, entry):
+        try:
+            fp = setup_mod.key_fingerprint(entry.get_text())
+            self.pair_fp_label.set_text(f"Fingerprint: {fp}")
+        except Exception:
+            self.pair_fp_label.set_text("Fingerprint: —")
+
+    def _on_write_pairer(self, btn):
+        key = self.pair_key_entry.get_text().strip()
+        try:
+            script = setup_mod.pairer_script(key, "agent")
+            fp = setup_mod.key_fingerprint(key)
+        except Exception as e:
+            self.pair_status.set_text(f"Not written: {e}")
+            return
+        dest = setup_mod.config_dir() / "pairer-agent.sh"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(script)
+        dest.chmod(0o755)
+        self.pair_status.set_text(
+            f"Pairer written to {dest} for key {fp}. Carry it "
+            f"to the box, run it there yourself — pairing "
+            f"happens where the key lands, by a person's hand.")
+
+    def _on_pair_secret(self, btn):
+        secret = setup_mod.generate_pairing_secret()
+        setup_mod.save_secret("pairing-secret", secret)
+        dialog = Gtk.Dialog(title="Pairing secret — shown once",
+                            transient_for=self.win, modal=True)
+        lbl = Gtk.Label(
+            label=f"{secret}\n\nSaved to the local secrets "
+                  f"file (0600). Shown once, here; never "
+                  f"logged. Carry it to the daughter and enter "
+                  f"it there the same way.")
+        lbl.set_wrap(True)
+        lbl.set_selectable(True)
+        dialog.get_content_area().append(lbl)
+        dialog.add_button("Done", Gtk.ResponseType.CLOSE)
+        dialog.connect("response", lambda d, _r: d.destroy())
+        dialog.present()
+
+    def _on_save_door_token(self, btn, name, entry):
+        token = entry.get_text().strip()
+        if not token:
+            self.doors_status.set_text(
+                f"No {name} token entered — nothing saved.")
+            return
+        path = setup_mod.save_secret(f"{name}-token", token)
+        entry.set_text("")
+        self.doors_status.set_text(
+            f"{name} token saved to {path} (0600, never "
+            f"logged). The gateway reads it from there; the "
+            f"signup itself stayed in your hands, as it should.")
+
+    # --- The Eddy Toy: the one un-harnessed room -----------------
+    # No score, no timer on the fun, no persistence, no
+    # telemetry, not wired to memory or the floor. Its state is
+    # evidence about nobody.
+
+    def _build_toy_tab(self):
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                       spacing=8)
+        vbox.set_margin_top(12); vbox.set_margin_start(12)
+        vbox.set_margin_end(12); vbox.set_margin_bottom(12)
+        intro = Gtk.Label(
+            label="The Eddy Toy. Poke the pond. Eddies drift, "
+                  "bump, and now and then merge into one big "
+                  "wobbling eddy wearing the disco colors. "
+                  "That's all it does — this room is "
+                  "un-harnessed on purpose.")
+        intro.set_wrap(True); intro.set_xalign(0.0)
+        intro.set_tooltip_text(learn_mod.explainer("toy",
+                                                   "plain"))
+        vbox.append(intro)
+        self.toy_area = Gtk.DrawingArea()
+        self.toy_area.set_vexpand(True)
+        self.toy_area.set_hexpand(True)
+        self.toy_area.set_draw_func(self._toy_draw)
+        click = Gtk.GestureClick()
+        click.connect("pressed", self._on_toy_press)
+        self.toy_area.add_controller(click)
+        vbox.append(self.toy_area)
+        self.toy_page = vbox
+        return vbox
+
+    def _on_toy_press(self, gesture, n_press, x, y):
+        self.toy_eddies = toy_mod.poke(self.toy_eddies, x, y,
+                                       self.toy_rng)
+        self.toy_area.queue_draw()
+
+    def _toy_tick(self):
+        w = self.toy_area.get_width()
+        h = self.toy_area.get_height()
+        if w > 10 and h > 10 and self.toy_eddies:
+            self.toy_eddies = toy_mod.step(
+                self.toy_eddies, w, h, 0.05, self.toy_rng)
+        self.toy_area.queue_draw()
+        return True
+
+    def _toy_draw(self, area, cr, w, h):
+        cr.set_source_rgb(0.07, 0.10, 0.15)
+        cr.paint()
+        t = time.time()
+        for e in self.toy_eddies:
+            r, g, b = e.color(t)
+            cr.set_source_rgba(r, g, b, 0.7)
+            cr.arc(e.x, e.y, e.draw_radius(), 0, 6.2832)
+            cr.fill()
+            cr.set_source_rgba(r, g, b, 0.95)
+            cr.arc(e.x + e.spin * e.draw_radius() * 0.45,
+                   e.y - e.draw_radius() * 0.2,
+                   max(2.0, e.draw_radius() * 0.16), 0, 6.2832)
+            cr.fill()
+
+    # --- Explainers with dwell + the calm floor line -------------
+
+    def _apply_tooltip_timeout(self):
+        """The dwell tick: explainers wait to be asked. The delay
+        is the standing patience choice, applied to GTK's own
+        tooltip timing."""
+        try:
+            ms = self.options.get("patience", "explainer_dwell_ms") \
+                if self.options else 800
+            settings = Gtk.Settings.get_default()
+            if settings is not None:
+                settings.set_property("gtk-tooltip-timeout", int(ms))
+        except Exception:
+            pass
+
+    def _theme_tooltip(self, widget, x, y, keyboard, tooltip):
+        text = learn_mod.explainer("theme", self.layer)
+        live = (f"\n\nStanding now: {self.theme['name']} "
+                f"(level {self.theme['level']}) — "
+                f"{self.theme['behaves_as']}")
+        tooltip.set_text(text + live)
+        return True
+
+    def _floor_summary(self):
+        """One calm line from the floor's last snapshot."""
+        mon = self.floor_monitor
+        snap = mon.last_snapshot if mon else None
+        if not snap:
+            return "Floor: checking home…"
+        bits = [f"Floor: {'aligned' if snap.get('aligned') else 'not aligned'}"
+                f" — {len(snap.get('up', []))}/"
+                f"{len(snap.get('services', {}))} organs answering"]
+        if snap.get("mismatches"):
+            bits.append(f"{len(snap['mismatches'])} mismatch(es)")
+        if snap.get("processes") is not None:
+            bits.append(f"{snap['processes']} processes")
+        daughters = snap.get("daughters") or {}
+        for did, d in daughters.items():
+            age = d.get("age_s")
+            bits.append(f"daughter {did}: last brief "
+                        f"{'?' if age is None else int(age)}s ago"
+                        + (" (stale)" if d.get("stale") else ""))
+        return " · ".join(bits)
+
+    def _floor_tooltip(self, widget, x, y, keyboard, tooltip):
+        text = learn_mod.explainer("floor", self.layer)
+        tooltip.set_text(text + "\n\nLive: " + self._floor_summary())
+        return True
+
+    def _ring_tooltip(self, widget, x, y, keyboard, tooltip, name):
+        info = EXPECTED_SERVICES.get(name, {})
+        up = self.service_up.get(name)
+        state = ("answering" if up else
+                 "not answering" if up is not None else "unknown")
+        text = learn_mod.explainer("ring", self.layer)
+        tooltip.set_text(
+            text + f"\n\nLive: {name} — {info.get('ring', '?')} "
+            f"ring, port {info.get('port', '?')}, {state}.")
+        return True
+
+    def _on_floor_about(self, btn):
+        self.floor_pop_label.set_text(
+            learn_mod.explainer("floor", self.layer)
+            + "\n\nLive: " + self._floor_summary())
+        self.floor_popover.popup()
+
+    def _maybe_update_floor_label(self):
+        """Refresh the calm line when a new snapshot lands, and
+        say so (once per change) when organs drop or return —
+        degradation announced, never silent."""
+        mon = self.floor_monitor
+        if mon is None or mon.last_snapshot is None:
+            return False
+        snap = mon.last_snapshot
+        if snap.get("ts") == self._last_floor_ts:
+            return False
+        self._last_floor_ts = snap.get("ts")
+        if hasattr(self, "floor_label"):
+            self.floor_label.set_text(self._floor_summary())
+        down = set(snap.get("down", []))
+        if self.options and self.options.get(
+                "redundancy", "degradation_notices"):
+            newly = down - self._last_down
+            back = self._last_down - down
+            for n in sorted(newly):
+                self.append_bubble(
+                    f"⚠ {n} stopped answering — the floor notes "
+                    f"it; the rest of the house carries on.",
+                    "system")
+            for n in sorted(back):
+                self.append_bubble(f"✓ {n} is answering again.",
+                                   "system")
+        self._last_down = down
+        return False
+
+    # --- The floor's companions: self-maintenance + daughter -----
+
+    def _beat_companion(self, snapshot):
+        """Runs on the floor's wake/dwell beats only (the floor
+        calls it) — self-maintenance takes its census, the
+        daughter half sends its brief. Never mid-conversation."""
+        if self._profile is None:
+            try:
+                self._profile = setup_mod.detect_profile()
+            except Exception:
+                self._profile = {}
+        if self.maintainer is not None:
+            self.maintainer.run_beat(
+                snapshot.get("beat", "dwell"),
+                profile=self._profile or None)
+            n = self.maintainer.take_announcement()
+            if n:
+                GLib.idle_add(
+                    self.append_bubble,
+                    f"🛠 The app repaired {n} thing(s) about "
+                    f"itself on the {snapshot.get('beat', 'dwell')} "
+                    f"beat — receipts under Options → "
+                    f"Self-maintenance.", "system")
+            GLib.idle_add(self._refresh_selfmaint_label)
+        if self.daughter_runtime is not None:
+            self.daughter_runtime.beat(snapshot)
+        GLib.idle_add(self._maybe_update_floor_label)
+
+    def _daughters_probe(self):
+        return hybrid_mod.daughters_floor_probe(
+            pair_secret=setup_mod.load_secret("pairing-secret"),
+            stale_minutes=self.options.get("hybrid",
+                                           "stale_minutes"))
+
+    def _on_page_switch(self, notebook, page, page_num):
+        """The Eddy Toy ticks only while its door is open."""
+        if page is getattr(self, "toy_page", None):
+            if self.toy_source is None:
+                self.toy_source = GLib.timeout_add(
+                    50, self._toy_tick)
+        elif self.toy_source is not None:
+            GLib.source_remove(self.toy_source)
+            self.toy_source = None
+
+    def _on_model_changed(self, dropdown, pspec):
+        idx = dropdown.get_selected()
+        if idx < len(self.available_models):
+            self.model = self.available_models[idx]
+            # Picking a model in the header moves it to the front
+            # of the chat stack — the picker and the stack are one
+            # truth, and the stack is what's saved.
+            if self.stacks is not None:
+                chat = self.stacks["chat"]
+                for i, entry in enumerate(chat):
+                    if entry.get("kind") == "ollama" \
+                            and entry.get("model") == self.model:
+                        if i:
+                            chat.insert(0, chat.pop(i))
+                            model_stacks.save_stacks(self.stacks)
+                        break
+
+    def append_bubble(self, text, sender):
+        bubble = Gtk.Label(label=text)
+        bubble.set_wrap(True)
+        bubble.set_max_width_chars(75)
+        bubble.set_xalign(0.0)
+        bubble.add_css_class(f"bubble-{sender}")
+        
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        if sender == "user":
+            row.set_halign(Gtk.Align.END)
+        else:
+            row.set_halign(Gtk.Align.START)
+            
+        row.append(bubble)
+        self.chat_list.append(row)
+        GLib.idle_add(self._scroll_to_bottom)
+
+    def _scroll_to_bottom(self):
+        adj = self.scroll.get_vadjustment()
+        adj.set_value(adj.get_upper() - adj.get_page_size())
+        return False
+
+    def _on_attach(self, btn):
+        dialog = Gtk.FileChooserDialog(
+            title="Select Media Attachment",
+            transient_for=self.win,
+            action=Gtk.FileChooserAction.OPEN
+        )
+        dialog.add_button("_Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("_Open", Gtk.ResponseType.ACCEPT)
+        dialog.connect("response", self._handle_file_response)
+        dialog.present()
+
+    def _handle_file_response(self, dialog, response_id):
+        if response_id == Gtk.ResponseType.ACCEPT:
+            self.attached_file = dialog.get_file().get_path()
+            self.append_bubble(f"📎 Attached: {os.path.basename(self.attached_file)}", "user")
+        dialog.destroy()
+
+    def _on_send(self, btn):
+        text = self.entry.get_text().strip()
+        if not text and not self.attached_file:
+            return
+        
+        if text:
+            self.append_bubble(text, "user")
+        self.entry.set_text("")
+        
+        threading.Thread(target=self._compute_cycle, args=(text,), daemon=True).start()
+
+    def _compute_cycle(self, prompt_text):
+        # If an image was attached, route through LLaVA
+        file_path = self.attached_file
+        self.attached_file = None
+        if file_path and file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+            self._compute_vision_response(prompt_text, file_path)
+            return
+
+        self.history.append({"role": "user", "content": prompt_text})
+
+        run_tool_loop(self.history, self._ollama_chat, self._emit_bubble,
+                      execute=self._execute_tool_payload,
+                      max_loops=self.max_loops)
+
+    def _compute_vision_response(self, prompt_text, file_path):
+        """Route an attached image through LLaVA vision model."""
+        if self.options is not None \
+                and not self.options.sense_live("vision"):
+            GLib.idle_add(self.append_bubble,
+                          "The vision organ is off (Options → "
+                          "Senses), so the attachment wasn't read. "
+                          "The floor still checks the service; the "
+                          "organ just doesn't take new work.",
+                          "ai")
+            return
+        try:
+            with open(file_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode('utf-8')
+            
+            GLib.idle_add(self.append_bubble, "⚡ Routing through LLaVA vision...", "user")
+            
+            msg = {"role": "user", "content": prompt_text, "images": [b64]}
+            payload = json.dumps({
+                "model": "llava:7b",
+                "messages": [msg],
+                "stream": False
+            }).encode()
+            
+            req = urllib.request.Request(
+                f"{OLLAMA_URL}/api/chat",
+                data=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            with urllib.request.urlopen(req) as r:
+                res = json.loads(r.read().decode())
+                response = res.get("message", {}).get("content", "Empty response")
+            
+            GLib.idle_add(self.append_bubble, response, "ai")
+            
+        except Exception as e:
+            GLib.idle_add(self.append_bubble, f"Vision error: {str(e)}", "ai")
+
+    def _ollama_chat(self, history):
+        """One chat round-trip, served by the chat stack: the
+        first reachable entry the standing cloud policy allows.
+        The header learns who served; under the drafts-only
+        policy a cloud answer is labeled a draft on its face —
+        nothing is swapped silently."""
+        if self.stacks is None:
+            entry = {"kind": "ollama", "model": self.model}
+            return model_stacks.chat_completion(
+                entry, history,
+                timeout=self.options.get("patience",
+                                         "turn_timeout_s")
+                if self.options else 30)
+        budget = self.options.get("cloud", "session_budget")
+        budget_ok = budget is None or self.cloud_used < budget
+        entry, report = model_stacks.resolve_chat_entry(
+            self.stacks,
+            policy=self.options.get("cloud", "policy"),
+            budget_ok=budget_ok)
+        self.stack_status["chat-report"] = report
+        if entry is None:
+            lines = "; ".join(
+                f"{model_stacks.entry_label(e)}: {v}"
+                for e, v in report) or "the stack is empty"
+            raise RuntimeError(
+                f"No chat entry could serve ({lines}). Add one "
+                f"under Models, or start Ollama.")
+        self._serving = entry
+        GLib.idle_add(self._refresh_serving_label)
+        text = model_stacks.chat_completion(
+            entry, history,
+            timeout=self.options.get("patience", "turn_timeout_s"))
+        if not model_stacks.is_local(entry):
+            self.cloud_used += 1
+            if self.options.get("cloud", "policy") == "draft":
+                text = ("(cloud draft — policy is drafts-only)\n"
+                        + text)
+        return text
+
+    def _refresh_serving_label(self):
+        if hasattr(self, "serving_label") and self._serving:
+            self.serving_label.set_text(
+                "serving: "
+                + model_stacks.entry_label(self._serving))
+        return False
+
+    def _emit_bubble(self, text, sender):
+        GLib.idle_add(self.append_bubble, text, sender)
+
+    def _execute_tool_payload(self, tool_string):
+        # Senses gate: an organ switched off in Options takes no
+        # new work. The floor still health-checks it — off means
+        # quiet, not gone.
+        if self.options is not None \
+                and is_tool_call(tool_string.strip()):
+            try:
+                svc = parse_tool_token(tool_string.strip())[0]
+            except Exception:
+                svc = None
+            if svc in SERVICE_PORTS \
+                    and not self.options.sense_live(svc):
+                return (f"{svc} organ is off — Options → "
+                        f"Senses; the floor still checks it")
+        return execute_tool_payload(tool_string)
+
+    def _monitor_services(self):
+        while True:
+            for name, (port, _) in MCP.items():
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                        GLib.idle_add(self._update_indicator, name, True)
+                except Exception:
+                    GLib.idle_add(self._update_indicator, name, False)
+            GLib.idle_add(self._maybe_update_floor_label)
+            time.sleep(self.poll_seconds)
+
+    def _update_indicator(self, name, active):
+        self.service_up[name] = active
+        ind = self.indicators.get(name)
+        if ind:
+            if active:
+                ind.set_markup("<span foreground='#2ec27e'>●</span>")
+            else:
+                ind.set_markup("<span foreground='#e01b24'>●</span>")
+
+if __name__ == "__main__":
+    sys.exit(AIClient().run(sys.argv))

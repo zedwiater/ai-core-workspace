@@ -16,6 +16,43 @@ No API keys. No internet required. Just Ollama on localhost:11434.
 
 ---
 
+## v1 (2026-11-13) — the full app
+
+The client grew its doors, all behind a calm main surface:
+
+- **Joy Calculator + themes** — a short agree/disagree instrument
+  sets the relationship depth (L1–L5); the depth becomes the
+  standing theme on open. The **base floor** checks all 8 services
+  on wake and on a 15-minute dwell — alignment monitors only on
+  those beats, in every theme.
+- **Options** — patience, cadence scaling, senses, redundancy and
+  cloud posture, each choice with its cost on its face, persisted
+  through the memory service.
+- **Models** — per-slot stacks (chat / reason / summarizer):
+  Ollama discovery or any OpenAI-compatible endpoint; the first
+  reachable entry the standing policy allows serves, and says so.
+- **Learn** — the back story and the technical receipts, in three
+  reading layers; the same layers drive every explainer tooltip.
+- **Setup** — a plan-first bootstrap for a fresh Linux box:
+  read-only inspection, cost announced up front, a privilege
+  comfort gradient (no silent sudo), home-folder-minimum mode,
+  hardware-sized local models, SSH pairing, guided chat doors.
+- **Self-maintenance** — on the floor's beats the app censuses
+  its own declared surfaces, repairs the mechanical with backups
+  and receipts, and files the rest as proposals for the owner's
+  red pen. New services join by **label + route** only.
+- **Parent / daughter hybrid** — one install can run as a parent,
+  a sensing daughter (hash-chained briefs, no raw media), or both.
+- **The Eddy Toy** — a small un-harnessed pond. Poke it.
+
+Instructions live twice: `docs/INSTRUCTIONS_PLAIN.md` for humans,
+`docs/INSTRUCTIONS_AI.md` as an executable spec for agents. The
+design record is `docs/APP_EXPERIENCE_AND_HARNESS.md`; the
+geometry is `docs/GEOMETRIC_NESTING.md`. Tests:
+`python3 -m unittest discover -s tests -t .` (119 checks).
+
+---
+
 ## The 8 MCP Micro-Services
 
 All run as systemd services, restarted automatically if they crash.
@@ -48,7 +85,7 @@ Or without installing (just need Ollama):
 
 ```bash
 # Start MCP services manually
-for f in source/mcp/mcp-*.py; do python3 "$f" &; done
+for f in source/rings/*/mcp-*.py; do python3 "$f" &; done
 
 # Run the client
 python3 source/app/ai-client.py
@@ -67,11 +104,11 @@ TOOL:files:write:{"path":"<path>","content":"<text>"}
 TOOL:files:search:{"pattern":"<glob>","dir":"<dir>"}
 TOOL:web:fetch:{"url":"<url>"}
 TOOL:web:extract:{"url":"<url>"}
-TOOL:vision:capture:{"camera":"<name>"}
-TOOL:vision:list_cameras:{}
-TOOL:memory:store:{"key":"<name>","value":"<data>"}
-TOOL:memory:recall:{"key":"<name>"}
-TOOL:memory:list_keys:{}
+TOOL:vision:grab:{"camera":"<name>"}
+TOOL:vision:list:{}
+TOOL:memory:set:{"key":"<name>","value":"<data>"}
+TOOL:memory:get:{"key":"<name>"}
+TOOL:memory:list:{}
 TOOL:coding:execute:{"code":"<python>"}
 TOOL:coding:eval:{"expression":"<expr>"}
 TOOL:sound:listen:{"duration":2}
@@ -86,18 +123,28 @@ TOOL:voice:alert:{"tone":"attention|alarm"}
 ```
 ├── install.sh                  # Smart installer (RAM/GPU detection, uninstall)
 ├── README.md                   # This file
+├── docs/
+│   └── GEOMETRIC_NESTING.md    # Why the tree is shaped this way
 ├── source/
 │   ├── app/
-│   │   └── ai-client.py        # GTK4/Libadwaita client (327 lines)
-│   ├── mcp/
-│   │   ├── mcp-shell.py        # Shell execution (port 9104)
-│   │   ├── mcp-files.py        # Read/write/search files (9101)
-│   │   ├── mcp-web.py          # Fetch + HTML extract (9102)
-│   │   ├── mcp-vision.py       # 9 RTSP cameras (9103)
-│   │   ├── mcp-sound.py        # Wake word + alarm detection (9105)
-│   │   ├── mcp-voice.py        # TTS via edge-tts/espeak (9106)
-│   │   ├── mcp-coding.py       # Python code execution (9107)
-│   │   └── mcp-memory.py       # SQLite key-value store (9108)
+│   │   └── ai-client.py        # GTK4/Libadwaita client (chat + Joy Calculator tab)
+│   ├── core/                   # The balanced center — shared by everything
+│   │   ├── protocol.py         # TOOL: tokens, wire format, socket caller
+│   │   ├── ring_service.py     # The register→serve→report-health lifecycle
+│   │   ├── loop.py             # The Intercept & Compute tool loop
+│   │   └── intake.py           # Joy Calculator engine (relationship depth)
+│   ├── rings/
+│   │   ├── state/              # Inner ring — holds state
+│   │   │   ├── mcp-memory.py   # SQLite key-value store (9108)
+│   │   │   └── mcp-coding.py   # Python code execution (9107)
+│   │   ├── actuation/          # Middle ring — acts on the machine
+│   │   │   ├── mcp-files.py    # Read/write/search files (9101)
+│   │   │   └── mcp-shell.py    # Shell execution (9104)
+│   │   └── atmosphere/         # Outer ring — world-facing
+│   │       ├── mcp-web.py      # Fetch + HTML extract (9102)
+│   │       ├── mcp-vision.py   # 9 RTSP cameras (9103)
+│   │       ├── mcp-sound.py    # Wake word + alarm detection (9105)
+│   │       └── mcp-voice.py    # TTS via edge-tts/espeak (9106)
 │   └── config.json             # Default configuration
 ```
 
