@@ -1475,13 +1475,18 @@ class AIClient(Adw.Application):
                    "system": "/opt + systemd units; more sudo "
                              "steps, named one by one"})
         self._opt_choice(
-            plan_box, "Local brain", ["ollama", "llamacpp", "none"],
+            plan_box, "Local brain",
+            ["ollama", "llamacpp", "wici", "none"],
             ch["brain"],
             lambda v: ch.__setitem__("brain", v),
             costs={"ollama": "simplest install; models as named "
                              "downloads",
                    "llamacpp": "llama.cpp router build; compiles "
                                "on the box",
+                   "wici": "WiCi split brain: experts seesaw "
+                           "CPU/GPU (InferSSD-style); real on "
+                           "Nvidia + NVMe, FAUX plan-only "
+                           "elsewhere",
                    "none": "no local brain — endpoints only"})
         self._opt_choice(
             plan_box, "Network bind", ["local", "lan", "tailnet"],
@@ -1659,6 +1664,23 @@ class AIClient(Adw.Application):
         t = plan["totals"]
         lim = plan["limits"]
         d, a = lim["declared"], lim["actual"]
+        wici_line = ""
+        if plan.get("wici"):
+            w = plan["wici"]
+            fd = w["feed"]
+            wici_line = (
+                f"\nWiCi seesaw: beta* {w['beta']} — reasoner "
+                f"splits GPU {w['gpu_gb']} GB / CPU "
+                f"{w['cpu_gb']} GB; summarizer rides the CPU "
+                f"leg; SSD feed bound ~{fd['bound_tok_s']} "
+                f"tok/s (ASSUMED {fd['cache_hit']:.0%} cache "
+                f"locality, ASSUMED {fd['drive_gb_s']:g} GB/s "
+                f"drive); patience cost "
+                f"{w['patience_cost']['est_latency_delta_pct']:+g}% "
+                "reason-token latency."
+                + (" FAUX — no Nvidia on this box: plan-only, "
+                   "nothing fetches or runs." if w["faux"]
+                   else ""))
         self.setup_plan_label.set_text(
             f"Cost up front: ~{t['disk_gb']} GB disk, "
             f"~{t['download_gb']} GB downloads, ~{t['minutes']} "
@@ -1674,7 +1696,7 @@ class AIClient(Adw.Application):
             f"Actual limits on this box: {a['cores']} cores, "
             f"{a['ram_gb']} GB RAM, ~{a['usable_gb']} GB usable "
             f"({a['basis']}), {a['disk_free_gb']} GB free.\n"
-            f"Rule: {lim['rule']}")
+            f"Rule: {lim['rule']}" + wici_line)
         self._render_plan_steps()
 
     def _render_plan_steps(self):

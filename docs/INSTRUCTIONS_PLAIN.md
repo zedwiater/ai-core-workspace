@@ -106,6 +106,28 @@ the fallback order, shown on screen, never hidden.
   reasoner is only spent on deep asks and the dwell beat. You do
   not need a big machine for basic use — see the Chromebook above.
 
+**The WiCi brain** (Setup → Local brain → wici) is the split
+option: the reasoner's expert work seesaws between the graphics
+card and the processor, each holding its share, while cold
+experts stream in from a fast SSD — the whole machine working,
+not just one part. Chat stays whole on the graphics card (dense
+work doesn't split), and the little summarizer rides the
+processor so neither side sits idle. The split point is a
+balance the plan computes from the two sides' speeds, and
+leadership follows those speeds, never a fixed
+graphics-card-first rule: on a many-core box with a small card
+the processor leads the experts — the plan calls that
+free-range inversion. On a box with an Nvidia card and an NVMe
+drive the WiCi plan is real, and it prints its honest price up
+front: an SSD feed bound (how fast the drive can stream
+experts, under a stated cache assumption) and a patience cost —
+the reasoner's tokens arrive slower than a card-only setup
+would serve them; that's the trade, in numbers, before you
+consent. On any other box the same plan prints as **FAUX**:
+the split it *would* use, fully worked out, but nothing is
+downloaded or run — the engine it names only works on Nvidia,
+and the plan says so on its face.
+
 ## Pairing
 
 **Pairing a daughter** (a second, smaller install that senses and

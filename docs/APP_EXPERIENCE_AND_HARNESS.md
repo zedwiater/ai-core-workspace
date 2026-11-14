@@ -340,3 +340,39 @@ transport and real queueing — NOT the full Sensor Ego v3** (no
 graded-consensus dialogue, no subconscious pass). The full stack is
 the named expansion path, and it will arrive the same way everything
 here arrives: labeled, routed, and censused.
+
+## Addendum — the WiCi door (2026-11-13, evening)
+
+Zak approved the faux-split proposal the same night it ran, with
+three widenings of his own, and the Setup door's brain list gained
+**wici**:
+
+- **Whole-system rule** (Zak's words: a GPU path that leaves the
+  CPU empty "is not system requirement spirit — the system wants
+  the whole system to function and process faster, not just select
+  parts"). `plan["wici"]["legs"]` assigns every slot: chat → GPU
+  leg, unsplit (dense work does not seesaw); reason → the fulcrum
+  seesaw across both legs; summarizer → CPU leg by default, so no
+  leg idles while the other works.
+- **The split as overclock, with patience cost.** The reasoner is
+  sized against the combined VRAM + RAM pool and split at
+  β\* = Rc/(Rc+Rg) under a declared ASSUMED rate model
+  (GPU 100 units; CPU 6.25/core). `patience_cost` prices the
+  trade in numbers: against a resident all-GPU path, the SSD
+  feed leg usually sets the pace, and the delta rides the plan
+  and the declared limits. On the reference profiles it computes
+  +114.3% reason-token latency — the feed, not either processor,
+  is the long pole, exactly as the faux-split run found.
+- **Free-range inversion.** Leadership follows the rates, never a
+  fixed GPU-first rule: a 32-core box with a 4 GB card computes
+  β\* = 0.667, the CPU leg leads the experts, and the plan says
+  so in those words.
+- **Faux stays faux.** InferSSD is CUDA-only; on any non-Nvidia
+  box the plan computes and prints the whole split — and emits
+  no engine, model, or seesaw step. The word FAUX rides the
+  brain step, `plan["wici"]["faux"]`, the declared limits, the
+  client summary, and the dry run.
+
+Gate: 130 tests (119 v1 + 11 new in `tests/test_wici.py`),
+compileall clean, census unchanged — the same six proposals
+standing, no new findings, no fills.

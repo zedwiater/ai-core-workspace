@@ -167,29 +167,253 @@ def usable_gb(profile):
     return round(float(profile.get("ram_gb", 0)) * 0.6, 1), "RAM"
 
 
-def recommend_models(profile):
+def _tier_row(usable):
+    """The sizing row a usable-GB figure lands on."""
+    for row in _TIERS:
+        if usable >= row[0]:
+            return row
+    return _TIERS[-1]
+
+
+# True download size per model — a 0.0 in _TIERS means "shares
+# another slot's weights", never that the weights weigh nothing.
+_MODEL_SIZE_GB = {}
+for _row in _TIERS:
+    for _model, _size in _row[1:]:
+        _MODEL_SIZE_GB[_model] = max(
+            _size, _MODEL_SIZE_GB.get(_model, 0.0))
+
+# Reason-slot candidates, largest first — the ladder the WiCi
+# residency caps step down.
+_REASON_LADDER = sorted(
+    {row[2][0]: _MODEL_SIZE_GB[row[2][0]] for row in _TIERS}.items(),
+    key=lambda kv: -kv[1])
+
+
+# --- WiCi sizing (brain "wici") --------------------------------------
+#
+# The WiCi pattern (WiCi One / InferSSD — WiCi's open-source
+# llama.cpp fork, Apache-2.0; cross-ref filed 2026-10-30): the
+# dense path stays resident on the GPU leg, MoE expert work
+# seesaws between the GPU and CPU legs running concurrently, and
+# cold experts stream from SSD — a third leg that can bind below
+# both processors. In this app only the REASON slot is treated
+# as MoE-shaped, so only it is sized and split this way; chat
+# keeps the dense sizing (the 2026-11-13 faux-split run, finding
+# C: dense work does not seesaw). The whole system still works:
+# the summarizer is assigned to the CPU leg, so no leg idles
+# while the other processes — the system wants the whole system
+# to function, not just select parts.
+#
+# The rate model is ASSUMED — declared here, printed on the
+# plan's face, and replaced by measurement on any box that
+# actually runs the split:
+WICI_GPU_EXPERT_RATE = 100.0          # ASSUMED GPU expert-leg rate
+WICI_CPU_EXPERT_RATE_PER_CORE = 6.25  # ASSUMED CPU rate per core
+WICI_CACHE_HIT = 0.85                 # ASSUMED expert-cache locality
+WICI_DRIVE_GB_S = 7.0                 # ASSUMED NVMe stream (GB/s)
+
+
+def wici_cpu_rate(cores):
+    """The CPU expert leg's ASSUMED rate on this box."""
+    return WICI_CPU_EXPERT_RATE_PER_CORE * max(1, int(cores or 1))
+
+
+def wici_fulcrum(cpu_rate, gpu_rate):
+    """beta* = Rc/(Rc+Rg): the share of expert work the CPU leg
+    carries when both legs finish together. Leadership follows
+    the rates — beta* above 0.5 means the CPU leg leads the
+    experts (free-range inversion), never a fixed GPU-first
+    rule."""
+    return cpu_rate / (cpu_rate + gpu_rate)
+
+
+def _wici_pools(profile):
+    """(combined usable GB, VRAM GB, usable RAM GB). The WiCi
+    reasoner is sized against VRAM + usable RAM together,
+    because its experts live on both legs."""
+    gpu = profile.get("gpu") or {}
+    vram = float(gpu.get("vram_gb") or 0.0)
+    usable_ram = round(float(profile.get("ram_gb", 0) or 0) * 0.6, 1)
+    return round(vram + usable_ram, 1), vram, usable_ram
+
+
+def wici_reason_pick(profile):
+    """(model, footprint GB) for the WiCi reason slot: the tier
+    the COMBINED pool buys, stepped down the reason ladder until
+    each leg can actually hold its fulcrum share (GPU share ≤
+    VRAM, CPU share ≤ usable RAM, where those are known)."""
+    combined, vram, usable_ram = _wici_pools(profile)
+    beta = wici_fulcrum(wici_cpu_rate(profile.get("cores", 1)),
+                        WICI_GPU_EXPERT_RATE)
+    model = _tier_row(combined)[2][0]
+    footprint = _MODEL_SIZE_GB[model]
+    caps = []
+    if vram > 0:
+        caps.append(vram / (1.0 - beta))
+    if usable_ram > 0:
+        caps.append(usable_ram / beta)
+    cap = min(caps) if caps else float("inf")
+    for cand, size in _REASON_LADDER:
+        if size <= footprint and size <= cap:
+            return cand, size
+    return _REASON_LADDER[-1]
+
+
+def wici_details(profile, reason_model):
+    """plan["wici"]: the fulcrum split, the per-slot leg
+    assignments, the SSD feed bound, and the patience cost, for
+    one box and one reasoner. FAUX whenever the box has no
+    Nvidia GPU — the engine is CUDA-only, so on any other box
+    the plan is the split it WOULD use, and says so. Every rate
+    in it is ASSUMED and labeled."""
+    gpu = profile.get("gpu") or {}
+    faux = gpu.get("vendor") != "nvidia"
+    footprint = _MODEL_SIZE_GB[reason_model]
+    cores = profile.get("cores", 1)
+    rc = wici_cpu_rate(cores)
+    beta = wici_fulcrum(rc, WICI_GPU_EXPERT_RATE)
+    cpu_gb = round(beta * footprint, 2)
+    gpu_gb = round(footprint - cpu_gb, 2)
+    streamed = round(footprint * (1.0 - WICI_CACHE_HIT), 3)
+    bound = round(WICI_DRIVE_GB_S / streamed, 2) if streamed \
+        else None
+    # Patience cost, from the same ASSUMED model. Bridging
+    # assumption, declared: one unit of expert work = 1 GB of
+    # expert weights touched, rates read as GB/s-equivalents.
+    # A resident all-GPU path pays footprint/Rg per token; the
+    # split pays max(fulcrum compute, SSD feed) — and the feed
+    # is usually the long pole. That gap is the patience.
+    t_all_gpu = footprint / WICI_GPU_EXPERT_RATE
+    t_split = max(footprint / (rc + WICI_GPU_EXPERT_RATE),
+                  streamed / WICI_DRIVE_GB_S)
+    delta = round((t_split - t_all_gpu) / t_all_gpu * 100, 1)
+    if delta >= 0:
+        patience_note = (
+            f"Throughput bought with patience: the split runs "
+            f"a reasoner this box could not hold on the GPU "
+            f"alone, and at the fulcrum its tokens arrive "
+            f"~{delta:g}% slower than a resident all-GPU path "
+            f"would serve them — the SSD feed, not either "
+            f"processor, sets the pace.")
+    else:
+        patience_note = (
+            f"Throughput bought with patience: at this size "
+            f"the feed leg does not bind, so the fulcrum split "
+            f"runs ~{abs(delta):g}% quicker per token than the "
+            f"all-GPU path — the patience is spent only when "
+            f"the reasoner outgrows the drive's feed.")
+    lead = "cpu" if beta > 0.5 else "gpu"
+    if faux:
+        legs = [
+            {"slot": "chat", "legs": ["cpu"],
+             "note": "FAUX — no Nvidia on this box, so the "
+                     "dense path rides the CPU leg here; on an "
+                     "Nvidia box it is GPU-leg primary, "
+                     "unsplit"},
+            {"slot": "reason", "legs": ["cpu"],
+             "note": f"FAUX — no split runs here; the split it "
+                     f"WOULD use: beta* {round(beta, 3)} across "
+                     f"GPU+CPU legs ({gpu_gb} GB GPU / "
+                     f"{cpu_gb} GB CPU)"},
+            {"slot": "summarizer", "legs": ["cpu"],
+             "note": "CPU leg — its assignment in both modes"},
+        ]
+    else:
+        legs = [
+            {"slot": "chat", "legs": ["gpu"],
+             "note": "dense path — GPU-leg primary, unsplit: "
+                     "dense work does not seesaw (faux-split "
+                     "finding C)"},
+            {"slot": "reason", "legs": ["gpu", "cpu"],
+             "note": f"MoE seesaw at the fulcrum beta* "
+                     f"{round(beta, 3)}: ~{gpu_gb} GB of "
+                     f"experts on the GPU leg, ~{cpu_gb} GB on "
+                     f"the CPU leg"
+                     + (" — free-range inversion: the CPU leg "
+                        "leads the experts on this box"
+                        if lead == "cpu" else "")},
+            {"slot": "summarizer", "legs": ["cpu"],
+             "note": "CPU leg by default — tiny and "
+                     "latency-tolerant, so no leg idles while "
+                     "the other works"},
+        ]
+    return {
+        "faux": faux,
+        "beta": round(beta, 3),
+        "lead_leg": lead,
+        "gpu_gb": gpu_gb, "cpu_gb": cpu_gb,
+        "reason_gb": footprint,
+        "rate_basis": (
+            f"ASSUMED rates: GPU expert leg "
+            f"{WICI_GPU_EXPERT_RATE:g} units; CPU expert leg "
+            f"{WICI_CPU_EXPERT_RATE_PER_CORE:g} units/core × "
+            f"{cores} cores = {rc:g} units; beta* = Rc/(Rc+Rg). "
+            "Estimates until measured on the box."),
+        "legs": legs,
+        "feed": {
+            "streamed_gb_per_token": streamed,
+            "cache_hit": WICI_CACHE_HIT,
+            "cache_hit_basis": "ASSUMED expert-cache locality",
+            "drive_gb_s": WICI_DRIVE_GB_S,
+            "drive_basis": "ASSUMED NVMe-class stream rate",
+            "bound_tok_s": bound,
+        },
+        "patience_cost": {
+            "est_latency_delta_pct": delta,
+            "basis": "ASSUMED rate model + SSD feed leg; "
+                     "bridging assumption: 1 unit of expert "
+                     "work = 1 GB of expert weights touched, "
+                     "rates read as GB/s-equivalents",
+            "note": patience_note,
+        },
+    }
+
+
+def recommend_models(profile, brain=None):
     """Per-slot model picks with the reasoning shown. Estimates,
-    labeled as such — measured tok/s replaces them after install."""
+    labeled as such — measured tok/s replaces them after install.
+    brain="wici" re-sizes the REASON slot only, against the
+    combined VRAM+RAM pool (see the WiCi block above); every
+    other brain — and the default — is today's behavior,
+    unchanged."""
     usable, basis = usable_gb(profile)
-    for floor_gb, chat, reason, summ in _TIERS:
-        if usable >= floor_gb:
-            break
+    _floor_gb, chat, reason, summ = _tier_row(usable)
     gpu = profile.get("gpu") or {}
     where = (f"{gpu.get('name', 'GPU')} with {gpu['vram_gb']} GB VRAM"
              if gpu.get("vram_gb") else
              f"{profile.get('ram_gb', 0)} GB system RAM")
     head = (f"{profile.get('cores', 1)} cores, {where} → "
             f"~{usable} GB honestly usable ({basis})")
+    reason_entry = {
+        "model": reason[0], "size_gb": reason[1],
+        "why": ("same weights as chat — counted once"
+                if reason[1] == 0 else
+                f"{head}; the reasoner runs on dwell, so "
+                f"it may be heavier than chat: "
+                f"{reason[0]}.")}
+    if brain == "wici":
+        model, footprint = wici_reason_pick(profile)
+        combined, _vram, _uram = _wici_pools(profile)
+        beta = wici_fulcrum(
+            wici_cpu_rate(profile.get("cores", 1)),
+            WICI_GPU_EXPERT_RATE)
+        reason_entry = {
+            "model": model,
+            "size_gb": 0.0 if model == chat[0] else footprint,
+            "why": (f"{head}; WiCi sizing: the reasoner's "
+                    f"experts live on both legs, so it is sized "
+                    f"against the combined pool (~{combined} GB "
+                    f"of VRAM + usable RAM) and split at the "
+                    f"fulcrum beta* {round(beta, 3)} — {model} "
+                    f"at ~{footprint} GB across the legs. "
+                    "Rates ASSUMED; chat keeps the dense "
+                    "sizing above.")}
     return {
         "chat": {"model": chat[0], "size_gb": chat[1],
                  "why": f"{head}; chat earns {chat[0]} — fast enough "
                         f"to talk, sized to what the box can hold."},
-        "reason": {"model": reason[0], "size_gb": reason[1],
-                   "why": ("same weights as chat — counted once"
-                           if reason[1] == 0 else
-                           f"{head}; the reasoner runs on dwell, so "
-                           f"it may be heavier than chat: "
-                           f"{reason[0]}.")},
+        "reason": reason_entry,
         "summarizer": {"model": summ[0], "size_gb": summ[1],
                        "why": "the inflow manager stays tiny on "
                               "every box — breadth is its job, not "
@@ -233,15 +457,18 @@ def _step(sid, title, why, commands=(), needs="user", min_level=1,
 
 def build_plan(profile, choices, src_dir=""):
     """The whole thread, as data. choices: mode home|system, brain
-    ollama|llamacpp|none, network local|lan|tailnet, api_tiers
-    bool, chat_doors bool, pair bool, role parent|daughter|hybrid.
+    ollama|llamacpp|wici|none, network local|lan|tailnet,
+    api_tiers bool, chat_doors bool, pair bool, role
+    parent|daughter|hybrid.
     src_dir is where the running app's tree lives (for copy steps).
     """
     mode = choices.get("mode", "home")
     brain = choices.get("brain", "ollama")
     home = profile.get("home", "~")
     root = "~/ai-core" if mode == "home" else "/opt/ai-core"
-    rec = recommend_models(profile)
+    rec = recommend_models(profile, brain=brain)
+    wici = wici_details(profile, rec["reason"]["model"]) \
+        if brain == "wici" else None
     steps = [
         _step("look", "Look at the box",
               "Read-only inspection: distro, cores, RAM, GPU, "
@@ -357,6 +584,90 @@ def build_plan(profile, choices, src_dir=""):
             disk_gb=sum(rec[s]["size_gb"] for s in ("chat", "reason", "summarizer")),
             download_gb=sum(rec[s]["size_gb"] for s in ("chat", "reason", "summarizer")),
             minutes=10))
+    elif brain == "wici":
+        fd = wici["feed"]
+        split_line = (
+            f"Seesaw split for the reasoner "
+            f"({rec['reason']['model']}, ~{wici['reason_gb']} GB "
+            f"of experts): beta* {wici['beta']} — GPU leg holds "
+            f"~{wici['gpu_gb']} GB, CPU leg ~{wici['cpu_gb']} GB, "
+            f"sized against the combined VRAM+RAM pool. "
+            f"{wici['rate_basis']}")
+        if wici["lead_leg"] == "cpu":
+            split_line += (
+                " Free-range inversion: on this box the CPU "
+                "leg leads the experts — leadership follows "
+                "the rates, never a fixed GPU-first rule.")
+        feed_line = (
+            f"SSD feed bound: at ASSUMED {fd['cache_hit']:.0%} "
+            f"expert-cache locality and an ASSUMED "
+            f"{fd['drive_gb_s']:g} GB/s NVMe stream, "
+            f"~{fd['streamed_gb_per_token']} GB streams per "
+            f"token → the feed caps the reasoner near "
+            f"{fd['bound_tok_s']} tok/s no matter how the "
+            f"split sits. {wici['patience_cost']['note']}")
+        if wici["faux"]:
+            gpu = profile.get("gpu") or {}
+            gpu_desc = ("no GPU at all" if not gpu else
+                        f"a {gpu.get('vendor', 'unknown')} GPU "
+                        f"({gpu.get('name', 'unnamed')})")
+            steps.append(_step(
+                "brain", "WiCi brain — FAUX on this box (guided)",
+                "FAUX — no Nvidia detected. WiCi's InferSSD "
+                "engine is CUDA-only on Linux, and this box "
+                f"has {gpu_desc} — so for this brain nothing "
+                "is fetched, built, or run, and no model "
+                "downloads appear in this plan. What the plan "
+                "carries, honestly labeled, is the split it "
+                "WOULD use on an Nvidia box. " + split_line +
+                " " + feed_line,
+                kind="guided", minutes=0))
+        else:
+            steps.append(_step(
+                "brain", "WiCi brain — InferSSD engine (guided)",
+                "WiCi's InferSSD is an open-source llama.cpp "
+                "fork (Apache-2.0) that streams MoE experts "
+                "from SSD while the dense path stays resident "
+                "on the GPU. Linux builds are CUDA-only. "
+                "Guided-manual: fetch and build InferSSD from "
+                "WiCi's own project distribution yourself — "
+                "no mirror is named here on purpose — then "
+                "point it at the GGUF weights from the models "
+                "step. " + split_line,
+                kind="guided", network=True, minutes=15))
+            dl = sum(rec[s]["size_gb"]
+                     for s in ("chat", "reason", "summarizer"))
+            steps.append(_step(
+                "models", "Fetch GGUF weights (guided)",
+                "Download the recommended models as GGUF "
+                f"files into {root}/models: " + ", ".join(
+                    f"{rec[s]['model']} (~{rec[s]['size_gb']} GB)"
+                    for s in ("chat", "reason", "summarizer")
+                    if rec[s]["size_gb"] > 0) +
+                ". Any GGUF source you trust; sizes are "
+                "estimates. The reasoner is the WiCi-sized "
+                "one — its experts live on both legs, and "
+                "the summarizer rides the CPU leg.",
+                kind="guided", network=True, disk_gb=dl,
+                download_gb=dl, minutes=10))
+            steps.append(_step(
+                "seesaw", "WiCi seesaw setting (from the "
+                "fulcrum)",
+                f"Set the CPU-MoE share to beta* "
+                f"{wici['beta']}: about "
+                f"{round(wici['beta'] * 100):g}% of the "
+                "reasoner's expert layers ride the CPU leg, "
+                "the rest stay on the GPU leg. llama.cpp's "
+                "--n-cpu-moe takes a layer COUNT — use "
+                "round(beta* × the model's expert-layer "
+                "count); layer counts are not in this plan's "
+                "model data, so the percentage is the setting "
+                "this plan can honestly carry. " + feed_line,
+                kind="config", minutes=1,
+                note=f"beta* {wici['beta']} · GPU "
+                     f"{wici['gpu_gb']} GB · CPU "
+                     f"{wici['cpu_gb']} GB · feed bound "
+                     f"~{fd['bound_tok_s']} tok/s"))
     else:
         steps.append(_step(
             "brain", "No local brain (your call)",
@@ -472,7 +783,7 @@ def build_plan(profile, choices, src_dir=""):
                  "by their providers; nothing in this plan buys "
                  "anything.",
     }
-    return {
+    plan = {
         "profile": profile, "choices": choices,
         "recommendations": rec, "steps": steps, "totals": totals,
         "minimums": MINIMUM_PROFILE,
@@ -512,6 +823,19 @@ def build_plan(profile, choices, src_dir=""):
             f"system install: {root} + systemd units "
             f"(~{totals['disk_gb']} GB incl. brain + models)."),
     }
+    if wici is not None:
+        plan["wici"] = wici
+        declared = plan["limits"]["declared"]
+        declared["brain"] = (
+            "wici — FAUX (no Nvidia detected)" if wici["faux"]
+            else "wici (Nvidia + InferSSD seesaw)")
+        declared["wici_beta"] = wici["beta"]
+        declared["wici_gpu_gb"] = wici["gpu_gb"]
+        declared["wici_cpu_gb"] = wici["cpu_gb"]
+        declared["wici_feed_tok_s"] = wici["feed"]["bound_tok_s"]
+        declared["wici_patience_delta_pct"] = \
+            wici["patience_cost"]["est_latency_delta_pct"]
+    return plan
 
 
 def steps_for_level(plan, level):
@@ -539,6 +863,33 @@ def render_script(plan, level):
         "(0 look · 1 user-space · 2 ask-per-sudo · 3 session grant)",
         "set -euo pipefail", "",
     ]
+    wici = plan.get("wici")
+    if wici:
+        fd = wici["feed"]
+        lines.append(
+            f"# WiCi seesaw: beta* {wici['beta']} — GPU leg "
+            f"{wici['gpu_gb']} GB, CPU leg {wici['cpu_gb']} GB "
+            f"of the reasoner"
+            + (" (CPU leg leads — free-range inversion)"
+               if wici["lead_leg"] == "cpu" else ""))
+        lines.append(
+            "# WiCi legs: " + " · ".join(
+                f"{leg['slot']} → "
+                f"{'+'.join(leg['legs']).upper()}"
+                for leg in wici["legs"]))
+        lines.append(
+            f"# WiCi feed bound: "
+            f"~{fd['streamed_gb_per_token']} GB/token at "
+            f"ASSUMED {fd['cache_hit']:.0%} cache locality, "
+            f"ASSUMED {fd['drive_gb_s']:g} GB/s drive → "
+            f"~{fd['bound_tok_s']} tok/s ceiling; patience "
+            f"cost {wici['patience_cost']['est_latency_delta_pct']:+g}% "
+            "reason-token latency vs a resident all-GPU path "
+            "(ASSUMED rates).")
+        if wici["faux"]:
+            lines.append("# WiCi: FAUX — no Nvidia detected; "
+                         "plan-only, nothing fetches or runs.")
+        lines.append("")
     runnable, held = steps_for_level(plan, level)
     held_ids = {s["id"] for s in held}
     for s in plan["steps"]:

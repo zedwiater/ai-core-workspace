@@ -55,7 +55,7 @@ Use `core.setup`:
 ```python
 profile = setup.detect_profile()          # READ-ONLY probes only
 plan    = setup.build_plan(profile, choices, src_dir=<tree root>)
-# choices: mode home|system, brain ollama|llamacpp|none,
+# choices: mode home|system, brain ollama|llamacpp|wici|none,
 #          network local|lan|tailnet, api_tiers bool,
 #          chat_doors bool, pair bool,
 #          role parent|daughter|hybrid
@@ -84,6 +84,24 @@ Rules:
 - Package branches by `profile["pkg_mgr"]`: apt | dnf | pacman.
   Arch: pacman branch; the app never modifies kernel, bootloader,
   or initramfs (mkinitcpio is out of scope for the app).
+- `brain="wici"` is the WiCi split brain (InferSSD-style):
+  `recommend_models(profile, brain="wici")` re-sizes the REASON
+  slot only, against the combined VRAM + usable-RAM pool, and
+  `build_plan` adds `plan["wici"]` — the fulcrum split
+  (β\* = Rc/(Rc+Rg) under an ASSUMED rate model, constants in
+  `core.setup`), per-slot `legs` (chat → GPU unsplit; reason →
+  GPU+CPU seesaw; summarizer → CPU, so no leg idles), the SSD
+  `feed` bound, and a `patience_cost` latency figure, all
+  mirrored into `limits["declared"]`. Leadership follows the
+  rate model, never a fixed GPU-first rule: when the CPU leg's
+  rate exceeds the GPU leg's, β\* > 0.5 and the CPU leads the
+  experts — free-range inversion. The engine step is
+  guided-manual (InferSSD is CUDA-only; no URL is named). On
+  any non-Nvidia profile the plan is FAUX: split, legs, feed
+  bound and patience cost are computed and printed, but no
+  engine or model step is emitted — the plan is the split it
+  WOULD use, labeled as such in `plan["wici"]["faux"]`, the
+  declared limits, and the dry-run rendering.
 - Secrets: `setup.save_secret(name, value)` →
   `~/.config/ai-core/secrets.json`, mode 0600, values never
   logged, never required. `setup.load_secret(name)` reads them.
