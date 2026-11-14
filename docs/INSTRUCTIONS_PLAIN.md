@@ -177,6 +177,93 @@ backup and a receipt you can read; anything that changes behavior
 is filed as a **proposal** and waits for you. It never runs
 mid-conversation — only on the wake and dwell beats.
 
+## Running it as an observer (no screen)
+
+The app does not need its window. On a small machine — even a
+small virtual machine — it can run **headless as an observer**:
+just the eight little services, listening only to the machine
+itself (loopback), with no screen and no client window.
+
+Beside the services runs a tiny **snapshot loop**: once a minute
+it writes one line to a log — the time, how busy the machine
+is, how much memory is free, how many processes are alive,
+whether each of the eight services answers, and how much memory
+the services are using in total. That log is the observer's own
+flowing floor of its host: a living baseline in a plain file,
+which the app (and you) can read back over any window.
+
+Why bother: the observer is a second set of eyes that never
+sleeps. It keeps state about the machine it lives on while the
+main app is closed, and it is one more angle in the room — when
+a question comes up about how the box has been doing, the
+observer's floor is a witness, not a guess.
+
+Honest limits, stated up front:
+
+- The footprint is small and measured: on a real run the eight
+  services together used about **103 MB** of memory, and the
+  snapshot loop about **12 MB** more.
+- In this mode the services are plain processes, **not** system
+  services (no systemd units). If the machine restarts, they
+  stop. Nothing is lost but the watching — restart them by
+  running the start script again.
+- The doors (chat, Options, Setup, the Toy) are not available
+  headless. The observer watches; it does not hold
+  conversations.
+- Everything lives in one **observer folder**: start and stop
+  scripts, logs, pid files, and the snapshot log
+  (`snapshots.jsonl`). Starting is idempotent — run the start
+  script twice and it reports what is already running instead
+  of doubling it.
+- "Running" is a claim that gets verified, never assumed: each
+  service must answer a real ping, and snapshot lines must
+  actually land in the log, before the observer is called up.
+
+## Your Joy Calculator profile
+
+The Joy Calculator's 13 agree/disagree statements can be
+answered **for you, from your own record** — with your
+permission, and only with it. The idea: your answers already
+exist, scattered through your data and your conversation
+history. Answering from the record turns the calculator into
+something that can answer questions about you — what depth you
+chose, what you agreed to, where your limits are — without
+asking you the same questions again.
+
+The rules are strict, because the answers carry your name:
+
+- **Every answer carries its source** — where in your record
+  it came from — and a confidence mark: *Direct* (you said it)
+  or *Practice* (it is your standing, documented way of
+  operating).
+- **What the record doesn't settle stays UNANSWERED.** Nobody
+  invents a position in your name. An honest blank beats a
+  confident guess.
+- The profile keeps an explicit **cannot-answer list**: the
+  questions this data does not support, written down as such.
+- The result is a profile plus a question-and-answer sheet —
+  and both are **yours**. They live on your machine only. The
+  *method* is part of this app; the *profile* never leaves the
+  house. Structure ships; house data never ships.
+
+## How far it goes on its own: the three gradients
+
+YOLO, but gradient-governed — the fun scales with the proof,
+not instead of it. Three gradients set how much latitude the
+system takes on work like the observer and the profile above:
+
+- **Confidence**: latitude grows as measured agreement hardens
+  (pings answered, snapshots landing, checks agreeing), and
+  shrinks the moment agreement does.
+- **Comfort**: privilege climbs in announced steps. Deeper
+  access is offered, never taken — the owner's tap is the gate.
+- **Patience**: things are allowed to form at their own rate.
+  A baseline that takes an hour to earn is worth more than one
+  forced in a minute.
+
+Within those three, the instruction is generous: take the most
+fun the gradients can honestly offer.
+
 ## The calm rules
 
 - The main screen stays calm: relationship, floor state, who's

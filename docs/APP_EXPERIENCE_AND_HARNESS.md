@@ -376,3 +376,33 @@ three widenings of his own, and the Setup door's brain list gained
 Gate: 130 tests (119 v1 + 11 new in `tests/test_wici.py`),
 compileall clean, census unchanged — the same six proposals
 standing, no new findings, no fills.
+
+## Addendum — observer mode and the personal Joy profile (2026-11-14)
+
+Two more pieces landed the same night, both run for real before
+they were written down:
+
+- **Observer mode.** AI Core runs headless on a small VM: the
+  eight ring services with no client, plus a snapshot loop
+  writing one resource line a minute — the app keeping a
+  flowing floor of its own host. Measured, not projected: the
+  services idle at ≈103 MB together, the loop ≈12 MB, and
+  "up" means 8/8 real protocol pings plus snapshot lines on
+  disk. It is a second witness in the room — an additional
+  angle for impromptu discussion. Its limits ride on its face:
+  plain processes, not systemd units, so a host restart stops
+  the watching, and one start script brings it back. Full
+  method: both instruction docs.
+- **The personal Joy profile.** Under the owner's grant, the
+  Joy Calculator's intake can be answered from the owner's own
+  data and conversation history — every answer cited and
+  marked Direct or Practice, statements the record doesn't
+  settle left UNANSWERED, an explicit cannot-answer list kept.
+  The profile and its Q&A sheet are house data and stay home;
+  the method ships in the instructions, the profile never does.
+
+Both run under the night's operating rule, in the owner's
+words: YOLO — confidence gradient, comfort and patience can
+have most fun we can offer. Latitude follows measured
+agreement, announced privilege steps, and things forming at
+their own rate.

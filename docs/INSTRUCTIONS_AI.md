@@ -239,3 +239,75 @@ and dwell beats; never mid-conversation.
 - GTK runtime requires PyGObject + a display; headless
   verification is: `python3 -m unittest discover -s tests -t .`
   plus `python3 -m compileall source/`.
+
+## 8. Observer mode (headless)
+
+The rings run without the client:
+
+- Launch the 8 services (`rings/{actuation,atmosphere,state}`)
+  as plain detached processes (e.g. `setsid`), loopback only —
+  the wire contract already binds `127.0.0.1`. The GTK client
+  is NOT started; PyGObject and a display are not required in
+  this mode. No client doors are available headless.
+- Alongside them, run a snapshot loop: every 60 s append one
+  JSON line to `snapshots.jsonl`: `{ts, loadavg, mem totals,
+  proc_count, services: {<name>: "ok"|"down"}, service_pids,
+  services_rss}`. The snapshot file is the observer's flowing
+  floor of its host and the evidence base for host-state
+  questions — an additional discussion angle, not a guess.
+- Observer folder (pattern, not a fixed path): start/stop
+  scripts, `logs/`, `pids/`, `snapshots.jsonl`. Start MUST be
+  idempotent: pidfiles hold the real service PIDs, never
+  wrapper shells; a re-run reports already-running services
+  instead of duplicating them. Stop MUST verify each PID's
+  command line matches the expected service before signaling
+  (PID-reuse guard), snapshot loop first, TERM→KILL grace.
+- "Up" is evidence-only: real pings through
+  `core.protocol.call_service` (expect `pong` from all 8) PLUS
+  snapshot lines present on disk. A launch message is not
+  evidence. Measured footprint (real VM run): services ≈103 MB
+  RSS total (12–17 MB each), snapshot loop ≈12 MB.
+- Limits, to be stated wherever this mode is described: the
+  services are plain processes, NOT systemd units. A host
+  restart kills them; the mode does not self-recover. Recovery
+  is re-running the start script.
+
+## 9. Joy Calculator personal profile (owner-granted)
+
+Under an explicit grant from the owner, the `core.intake`
+intake (13 agree/disagree statements) MAY be answered from the
+owner's own data and conversation history, producing a personal
+profile the app can answer questions from. Rules are normative:
+
+- Every answered statement carries: the verbatim statement, the
+  answer, a source citation into the owner's record, and a
+  confidence mark — `Direct` (the owner stated or contracted
+  it) or `Practice` (the owner's standing documented operating
+  pattern).
+- A statement the record does not settle MUST be recorded
+  UNANSWERED. Never infer a position in the owner's name;
+  never fill a gap to complete the set.
+- Deliverables: a statement-by-statement profile and a Q&A
+  sheet, and they MUST include an explicit cannot-answer list —
+  the questions the underlying data does not support.
+- Privacy spine: the profile and Q&A are the owner's data.
+  They stay local, outside the shipped tree; only the method
+  is documented and shippable. Structure ships; house data
+  never ships. Never commit a personal profile to this
+  repository.
+
+## 10. Gradient-governed latitude
+
+Latitude for autonomous work (observer operation, profile
+building, census beats) is governed by three gradients; take
+the most latitude the three jointly allow:
+
+- **Confidence**: scale with measured agreement — verified
+  pings, landed snapshots, agreeing checks. Disagreement
+  contracts latitude immediately.
+- **Comfort**: privilege advances only in announced steps on
+  the §1 gradient; the owner's tap is the gate. Never take a
+  step that was not offered.
+- **Patience**: let baselines and profiles form at their
+  natural cadence (floor windows, dwell beats). Do not force,
+  backfill, or fake maturity to reach a state sooner.
