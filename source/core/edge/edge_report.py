@@ -42,9 +42,17 @@ def local_processes():
                       "exec": m.group(1) if m else None})
     return procs
 
+def default_kit():
+    """The kit modules live beside this file in a flat edge kit; in the
+    repo layout (source/core/edge/) they live one level up."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if os.path.exists(os.path.join(here, "census.py")):
+        return here
+    up = os.path.abspath(os.path.join(here, ".."))
+    return up if os.path.exists(os.path.join(up, "census.py")) else here
+
 def main():
-    kit = sys.argv[sys.argv.index("--kit") + 1] if "--kit" in sys.argv else \
-        os.path.dirname(os.path.abspath(__file__))
+    kit = sys.argv[sys.argv.index("--kit") + 1] if "--kit" in sys.argv else default_kit()
     out = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else "report.json"
     with tempfile.TemporaryDirectory() as td:
         run_kit_module(kit, "census.py", td)

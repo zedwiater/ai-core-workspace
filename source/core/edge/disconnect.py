@@ -74,11 +74,20 @@ def load_reports(home):
                 reports[name] = json.load(open(p))
     return reports
 
+def find_kit():
+    """Locate pipes.py wherever this script was installed: beside it
+    (flat edge kit), in bundle/ (the ai-core tree), or one level up
+    (the repo layout, source/core/edge/ under source/core/)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (here, os.path.join(here, "bundle"), os.path.join(here, "..")):
+        if os.path.exists(os.path.join(cand, "pipes.py")):
+            return os.path.abspath(cand)
+    raise SystemExit("pipes.py not found beside disconnect.py, in bundle/, or one level up")
+
 def cmd_snapshot(home):
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "bundle"))
     import importlib.util
     spec = importlib.util.spec_from_file_location(
-        "pipes", os.path.join(os.path.dirname(os.path.abspath(__file__)), "bundle", "pipes.py"))
+        "pipes", os.path.join(find_kit(), "pipes.py"))
     pipes = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pipes)
     ctx = {"ports": pipes.listening_ports(), "relay_paths": pipes.mediamtx_paths()}
