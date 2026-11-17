@@ -4,6 +4,7 @@ import gi, json, threading, os, sys, socket, base64, urllib.request
 import random, time, subprocess
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from core.loop import execute_tool_payload, run_tool_loop
+from core.models import human_error
 from core.intake import PAGES, EngagementWriter, compute_depth, find_unfinished
 from core.floor import (DEFAULT_THEME, EXPECTED_SERVICES, FloorMonitor,
                         THEMES, load_theme, save_theme, theme_for_level)
@@ -2210,7 +2211,7 @@ class AIClient(Adw.Application):
             GLib.idle_add(self.append_bubble, response, "ai")
             
         except Exception as e:
-            GLib.idle_add(self.append_bubble, f"Vision error: {str(e)}", "ai")
+            GLib.idle_add(self.append_bubble, human_error(e), "ai")
 
     def _ollama_chat(self, history):
         """One chat round-trip, served by the chat stack: the

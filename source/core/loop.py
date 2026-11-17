@@ -14,6 +14,7 @@ The loop is GUI-free. The client injects three callables:
 """
 import subprocess
 
+from core.models import human_error
 from core.protocol import SERVICE_PORTS, is_tool_call, mcp_call, parse_tool_token
 
 
@@ -137,5 +138,5 @@ def run_tool_loop(history, chat, emit, execute=None, max_loops=5):
                 history.append({"role": "assistant", "content": ai_output})
                 break
         except Exception as e:
-            emit(f"Error: {str(e)}", "ai")
+            emit(human_error(e), "ai")
             break

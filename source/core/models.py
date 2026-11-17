@@ -65,6 +65,31 @@ def _opener(method, url, payload=None, timeout=5, headers=None):
         return r.status, json.loads(r.read().decode())
 
 
+def human_error(e):
+    """Translate a transport/model failure into guidance a person can
+    act on. A raw exception string in the chat is a design failure:
+    the user should learn what is down, why it matters, and the exact
+    remedy — the technical tail rides along in parentheses, demoted,
+    never deleted."""
+    import urllib.error
+    tail = f"({type(e).__name__}: {e})"
+    if isinstance(e, urllib.error.HTTPError) and e.code == 404:
+        return ("That model isn't on this machine yet — the door answered, "
+                "but the model hasn't been pulled. Pull it with: "
+                "ollama pull <model> — then ask me again. " + tail)
+    if isinstance(e, urllib.error.URLError) and \
+            ("111" in str(e) or "refused" in str(e).lower()):
+        return ("I can't reach Ollama at localhost:11434 — the model door "
+                "isn't answering, so there's no brain on the other end yet. "
+                "Start it with: sudo systemctl enable --now ollama — then "
+                "confirm the model is pulled: ollama list. " + tail)
+    if isinstance(e, (TimeoutError,)) or "timed out" in str(e).lower():
+        return ("The model took longer than the patience setting allows. "
+                "It may still be loading its seat — give it a moment, or "
+                "raise patience in Options. " + tail)
+    return f"Something failed on the way to the model. {tail}"
+
+
 def entry_label(entry):
     if entry.get("kind") == "openai":
         return f"endpoint · {entry.get('model', '?')} @ {entry.get('base_url', '?')}"
