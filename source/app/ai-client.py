@@ -314,6 +314,15 @@ class AIClient(Adw.Application):
         self.notebook.append_page(self._build_learn_tab(), Gtk.Label(label="Learn"))
         self.notebook.append_page(self._build_setup_tab(), Gtk.Label(label="Setup"))
         self.notebook.append_page(self._build_toy_tab(), Gtk.Label(label="Eddy Toy"))
+        # The Conduit surface (2026-11-17 mandate): the landing is the
+        # crawl, rendered — greeting, map and options first; the chat
+        # is one door among them. Guarded: a conduit failure must
+        # never take the client down with it.
+        try:
+            import conduit_pages
+            conduit_pages.attach(self.notebook)
+        except Exception:
+            pass
         self.notebook.connect("switch-page", self._on_page_switch)
         self.win.set_content(self.notebook)
         self.win.present()

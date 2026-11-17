@@ -69,3 +69,15 @@ instead of inventing a seat); hub_watch established its baseline with
 0 suggestions; the disconnect completed snapshot -> adopt -> release
 with per-tier log lines. On a stocked machine the same steps yield the
 full tables in docs/BENCH-20261117.md.
+
+## What the desktop client shows on first launch (2026-11-17)
+
+The v1 client's installer (install.sh) now runs this crawl as its
+Step 4.5 and narrates it — hardware, budget, tier promises, pipe
+findings, and advice (CPU-seat expectations, model pull state, the
+web-knowledge note) — and its final banner states the model-door
+truth. On launch, `ai-client` opens on the **Conduit landing**
+(simple view first; Advanced unfolds the full tables), with Joy
+Gradient, Nodes, Dwell, Roam Watch and Help & Support tabs beside
+the chat. The landing is the crawl, rendered by
+source/app/conduit_pages.py from the same core modules.

@@ -108,6 +108,48 @@ else
     echo "   Check: journalctl -u ollama -n 20"
 fi
 
+echo "🛰️  Step 4.5: Crawling this machine — the conduit's first job."
+echo "   What it finds decides your tiers, your model fit, and the promises"
+echo "   the landing page will make. Learned knowledge, as it arrives:"
+CRAWL_DIR=$(mktemp -d)
+if python3 source/core/census.py --out "$CRAWL_DIR" >/dev/null 2>&1 \
+   && python3 source/core/pipes.py --out "$CRAWL_DIR" >/dev/null 2>&1; then
+    mkdir -p "$TARGET_DIR/crawl" 2>/dev/null || true
+    cp "$CRAWL_DIR/expectations.json" "$CRAWL_DIR/pipes.json" "$TARGET_DIR/crawl/" 2>/dev/null || true
+    python3 - "$CRAWL_DIR" "$OPTIMAL_MODEL" <<'CRAWL_EOF'
+import json, os, sys
+d, optimal = sys.argv[1], sys.argv[2]
+c = json.load(open(os.path.join(d, "expectations.json")))
+p = json.load(open(os.path.join(d, "pipes.json")))
+exp = c["expectations"]; tiers = {t["tier"]: t for t in exp["tiers"]}
+print(f"   🖥️  {c['host']}: {c['cpu']['effective_threads']} effective threads, "
+      f"{round(c['ram']['effective_mb']/1024, 1)} GB usable RAM, "
+      f"{('GPU: ' + ', '.join(g['name'] for g in c['gpus'])) if c['gpus'] else 'no GPU'}")
+print(f"   🎚️  Budget: {exp['budget']['max_parallel_model_tasks']} model task(s) at once. "
+      "Script tasks are never seat-bound — the floor is always up.")
+conv = tiers.get("conversation", {})
+print(f"   💬 Conversation: {conv.get('status', 'unknown')} — "
+      f"{conv.get('expectation') or conv.get('announcement', '')}")
+if not c["gpus"]:
+    print("   💡 No GPU found: models take CPU seats here. Speeds on the landing "
+          "page are written for CPU — honest numbers, not brochure numbers.")
+if "resident" not in conv.get("status", ""):
+    print(f"   💡 Your conversation model isn't resident yet. The fit for this "
+          f"machine is {optimal} — pull it with: ollama pull {optimal}")
+if tiers.get("knowledge (web)", {}).get("status", "").startswith("available"):
+    print("   💡 Web knowledge is reachable: even a small local model answers "
+          "above its weight here. Low tier is a tier, not a handicap.")
+print(f"   🔌 Pipes recognized: {len(p['pipes_found'])} "
+      f"({', '.join(x['id'] for x in p['pipes_found']) or 'none yet'}) — "
+      "each gets a feed and a lane in the hub.")
+for o in p["script_tier_offers"]:
+    print(f"   ✨ Script tier unlocked: {o['offer']}")
+CRAWL_EOF
+else
+    echo "   ⚠️ The crawl could not run in this environment — the app crawls"
+    echo "      again on first launch and will show what it finds there."
+fi
+
 echo "📂 Step 5: Deploying files..."
 mkdir -p "$TARGET_DIR/app" "$TARGET_DIR/core" "$TARGET_DIR/rings/state" "$TARGET_DIR/rings/actuation" "$TARGET_DIR/rings/atmosphere"
 cp -r source/core/* "$TARGET_DIR/core/"
@@ -183,6 +225,13 @@ if $ALL_OK; then
 else
     echo "⚠️ AI Core installed with some inactive services."
     echo "   Check: sudo journalctl -u ai-mcp-* -n 10"
+fi
+if curl -s http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+    echo "🚪 Model door: Ollama is answering on localhost:11434."
+else
+    echo "🚪 Model door: Ollama is NOT answering yet. The app will greet you"
+    echo "   with the remedy on its landing page (start it with:"
+    echo "   sudo systemctl enable --now ollama)."
 fi
 echo ""
 echo "📋 Quick reference:"

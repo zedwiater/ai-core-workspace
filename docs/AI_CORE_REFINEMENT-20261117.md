@@ -128,3 +128,20 @@ never the secret), feed hookup. Identity is process-confirmed, not
 port-only (a bare :5000 once claimed Frigate on a box running none).
 Hourly hub-watch.timer runs on the PC and Pi 5; the VM's watch rides
 the conduit cycle (no user systemd bus in its sandbox).
+
+## Brick 4 — the Conduit surface in the real client (landed 2026-11-17 evening)
+
+Zak uninstalled the v1 client after it greeted him with a blank chat
+(and, pre-fix, a raw connection-refused). The mandate he restated:
+long install if needed — crawling, configuring plugs/deps/models to
+the hardware, scrolling advice + learned knowledge while it works —
+then a landing page, simple view first, with Joy Gradient, Nodes,
+Dwell, Roam Watch, and Help & Support (FAQ, explainers, use cases,
+modes). Built into the repo: source/app/conduit_pages.py (headless
+data layer + Gtk builders) wired as the client's first notebook pages;
+install.sh gained the Step 4.5 crawl narration + a truthful
+model-door line in the final banner. Verified headlessly: data layer
+live on the VM (greeting renders real numbers, honest zeros included),
+8 new tests, full suite green, py_compile + bash -n. NOT verified
+from here: the rendered pixels on Zak's laptop — his reinstall is
+the proof, per the surface-truth rule.
