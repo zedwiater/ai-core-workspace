@@ -102,3 +102,29 @@ rendering (tabs.json is its data model).
 4. Joy calculation hooks: expectation-vs-experience logging per task
    (promised class vs felt class), the raw material of the Joy
    Calculator at runtime.
+
+## Brick 3 — the conduit hub + bilateral disconnect (landed 2026-11-17)
+
+edge/disconnect.py severs the pipes from their ad-hoc arrangement into
+the CONDUIT: snapshot (arrangement as found) -> adopt (hub registry in
+conduit/state/hub.json — every pipe with path, process location,
+metrics source and tier; tier-categorized log trails in conduit/logs/)
+-> release (verify against snapshot, archive, hand back). Adoption is
+registry-level by design: the conduit hosts the map, metrics, routing
+and logs while processes keep flowing underneath (the stability rule);
+a literal traffic cutover is a separate gated step. The hub app
+(app/conduit-app.html, baked by app/make_data.py) renders it: node
+tabs + united view, system map, process directory, tier logs,
+Simple/Advanced/Custom views, searchable Help & Glossary.
+
+## Brick 3.5 — hub watch (landed 2026-11-17)
+
+edge/hub_watch.py is the hub's active crawl: hourly diff of ports,
+devices and service units against the node's baseline, plus a
+known-services table (Frigate, MediaMTX/go2rtc, Ollama, MQTT, Home
+Assistant). New arrivals get integration suggestions with linking
+options — web-UI link card, credential POINTER (where the login lives;
+never the secret), feed hookup. Identity is process-confirmed, not
+port-only (a bare :5000 once claimed Frigate on a box running none).
+Hourly hub-watch.timer runs on the PC and Pi 5; the VM's watch rides
+the conduit cycle (no user systemd bus in its sandbox).
