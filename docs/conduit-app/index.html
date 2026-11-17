@@ -53,6 +53,7 @@
     <button data-view="advanced" class="on">Advanced</button>
     <button data-view="custom">Custom</button>
     <span id="custom-ck" style="display:none">
+      <label class="ck"><input type="checkbox" data-panel="services" checked> Services</label>
       <label class="ck"><input type="checkbox" data-panel="map" checked> Map</label>
       <label class="ck"><input type="checkbox" data-panel="processes" checked> Processes</label>
       <label class="ck"><input type="checkbox" data-panel="logs" checked> Logs</label>
@@ -135,7 +136,26 @@ const page = (id) => document.getElementById("page-" + id);
     for (const pr of (r.watched_processes || [])) procRows.push(
       `<tr><td>${esc(NODE_NAMES[n] || n)}</td><td><code>${esc(pr.name)}</code></td><td class="small">${esc(pr.location)}</td><td class="small"><code>${esc(pr.exec || "")}</code></td></tr>`);
   }
+  const svcCards = [];
+  for (const [n, w] of Object.entries(D.watch || {})) {
+    for (const s of w.suggestions) {
+      const opts = s.linking_options.map(o =>
+        o.option === "web UI link card"
+          ? `<li>${esc(o.option)}: <a href="${esc(o.target)}" target="_blank" rel="noopener">${esc(o.target)}</a></li>`
+          : `<li>${esc(o.option)}: ${esc(o.target)}</li>`).join("");
+      svcCards.push(`<div class="panel" style="margin:0"><h3>${esc(s.service)}</h3>
+        <p class="small">On ${esc(NODE_NAMES[n] || n)} · <span class="${/candidate/.test(s.status) ? "warn" : "ok"}">${esc(s.status)}</span></p>
+        <p class="small">Role: ${esc(s.role)}<br>Feeds: ${esc(s.feeds)}</p>
+        <p class="small" style="margin-bottom:2px">Linking options:</p><ul class="small" style="margin-top:0">${opts}</ul></div>`);
+    }
+  }
   page("map").append(
+    $(`<div class="panel" data-p="services"><h2>Services &amp; integration suggestions — the hub watch</h2>
+      <p class="small dim">The hub re-crawls hourly on every node. Anything new — a plugged-in USB
+      device, new software, a Frigate-class service — is identified, reviewed, and suggested here
+      with its linking options. Credential pointers name where the login lives (your password
+      manager / vault); the hub never stores the secret itself. Integration happens on your go-ahead.</p>
+      <div class="grid">${svcCards.join("") || '<p class="dim">No suggestions — run the hub watch.</p>'}</div></div>`),
     $(`<div class="panel" data-p="map"><h2>System map — every pipe the conduit hosts</h2>
       <table><tr><th>Node</th><th>Pipe</th><th>Feed → plugin</th><th>Lane</th></tr>${pipeRows.join("")}</table>
       <p class="small dim">Metrics: each node's report carries load, RAM, disk and per-tier status;
