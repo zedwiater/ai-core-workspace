@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Core — Conduit Hub</title>
+<style>
+  :root { --bg:#0e1116; --panel:#171c24; --line:#2a3242; --txt:#e8ecf3; --dim:#9aa7ba;
+          --acc:#5ec8a5; --warn:#e8b34b; --bad:#e06c5b; --chip:#232b38; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap;
+           gap:10px; align-items:center; }
+  header h1 { font-size:19px; margin:0 12px 0 0; }
+  .chip { background:var(--chip); border:1px solid var(--line); border-radius:20px;
+          padding:2px 10px; font-size:12.5px; color:var(--dim); }
+  .chip b { color:var(--acc); font-weight:600; }
+  .views { margin-left:auto; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .views button, nav.tabs button { background:var(--chip); color:var(--txt); border:1px solid var(--line);
+          border-radius:8px; padding:5px 12px; cursor:pointer; font-size:13.5px; }
+  .views button.on, nav.tabs button.on { background:var(--acc); color:#0b0f14; border-color:var(--acc); font-weight:600; }
+  nav.tabs { display:flex; gap:6px; padding:10px 18px 0; flex-wrap:wrap; }
+  main { padding:14px 18px 30px; max-width:1180px; }
+  section.page { display:none; } section.page.on { display:block; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+           padding:14px 16px; margin:0 0 14px; }
+  .panel h2 { margin:0 0 8px; font-size:16px; } .panel h3 { margin:12px 0 6px; font-size:14.5px; }
+  p, li { color:var(--txt); } .dim { color:var(--dim); } .small { font-size:13px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; }
+  .ok { color:var(--acc); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  code { background:#0b0f14; padding:1px 5px; border-radius:5px; font-size:12.5px; color:#cfe3ff; }
+  pre { background:#0b0f14; border:1px solid var(--line); border-radius:8px; padding:10px;
+        overflow:auto; font-size:12.5px; white-space:pre-wrap; }
+  input[type=search] { width:100%; padding:9px 12px; border-radius:8px; border:1px solid var(--line);
+        background:#0b0f14; color:var(--txt); font-size:14.5px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }
+  .grid .panel { margin:0; }
+  label.ck { display:inline-flex; gap:5px; align-items:center; margin-right:10px; font-size:13px; color:var(--dim); }
+  .lane { font-weight:600; } details { margin:6px 0; } summary { cursor:pointer; color:var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI Core — Conduit Hub</h1>
+  <span class="chip">State: <b id="hub-state">—</b></span>
+  <span class="chip" id="hub-totals">—</span>
+  <span class="chip" id="hub-mode">—</span>
+  <div class="views">
+    <span class="dim small">View:</span>
+    <button data-view="simple">Simple</button>
+    <button data-view="advanced" class="on">Advanced</button>
+    <button data-view="custom">Custom</button>
+    <span id="custom-ck" style="display:none">
+      <label class="ck"><input type="checkbox" data-panel="map" checked> Map</label>
+      <label class="ck"><input type="checkbox" data-panel="processes" checked> Processes</label>
+      <label class="ck"><input type="checkbox" data-panel="logs" checked> Logs</label>
+      <label class="ck"><input type="checkbox" data-panel="social" checked> Social</label>
+      <label class="ck"><input type="checkbox" data-panel="checklist" checked> Readiness</label>
+    </span>
+  </div>
+</header>
+<nav class="tabs" id="tabs"></nav>
+<main id="main"></main>
+<script src="data.js"></script>
+<script>
+const D = window.CONDUIT, R = D.reports, T = D.tabs.tabs, U = D.tabs.united;
+const NODE_NAMES = { pc: "PC — main conduit", pi5: "Pi 5 — edge", vm: "VM — low node" };
+const $ = (h) => { const t = document.createElement("template"); t.innerHTML = h.trim(); return t.content.firstElementChild; };
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/* ---------- header ---------- */
+document.getElementById("hub-state").textContent = "ADOPTED";
+document.getElementById("hub-totals").innerHTML =
+  `<b>${D.hub.system_map.pipe_count}</b> pipes · <b>${Object.keys(R).length}</b> edge nodes · <b>${U.total_model_seats}</b> model seats`;
+document.getElementById("hub-mode").textContent = D.hub.mode.split("—")[0].trim();
+
+/* ---------- tabs ---------- */
+const PAGES = [["overview", "Overview"], ["map", "System Map"],
+  ...Object.keys(R).map(n => ["node-" + n, NODE_NAMES[n] || n]),
+  ["logs", "Logs by Tier"], ["help", "Help & Glossary"]];
+const nav = document.getElementById("tabs"), main = document.getElementById("main");
+PAGES.forEach(([id, label], i) => {
+  const b = document.createElement("button"); b.textContent = label; if (!i) b.classList.add("on");
+  b.onclick = () => { nav.querySelectorAll("button").forEach(x => x.classList.remove("on")); b.classList.add("on");
+    main.querySelectorAll("section.page").forEach(s => s.classList.toggle("on", s.id === "page-" + id)); };
+  nav.appendChild(b);
+  const s = document.createElement("section"); s.className = "page" + (i ? "" : " on"); s.id = "page-" + id;
+  main.appendChild(s);
+});
+const page = (id) => document.getElementById("page-" + id);
+
+/* ---------- overview ---------- */
+{
+  const tiersSys = {};
+  for (const [n, t] of Object.entries(T)) for (const [tier, st] of Object.entries(t.tiers))
+    if (!/unavailable|offline/.test(st)) (tiersSys[tier] ||= []).push(n);
+  const rows = Object.entries(tiersSys).map(([tier, ns]) =>
+    `<tr><td>${esc(tier)}</td><td>${ns.map(n => esc(NODE_NAMES[n] || n)).join(", ")}</td></tr>`).join("");
+  page("overview").append(
+    $(`<div class="panel" data-p="greeting"><h2>App ready — the conduit is hosting your system</h2>
+      <p>After crawl and adoption, this hub holds every pipe, path and metric in one map, and each
+      tier's promise is stated before it is made. Ask a question or hand it a task: conversation is
+      resident on the PC seat, knowledge rides the web leg at network speed on every node, and deep
+      work takes an announced seat — never a silent wait.</p>
+      <p class="small dim">Measured on your hardware — mid (PC): ${esc(D.measured.mid_pc)}</p>
+      <p class="small dim">Low (VM): ${esc(D.measured.low_vm)}</p>
+      <p class="small dim">Floor: ${esc(D.measured.floor)}</p></div>`),
+    $(`<div class="panel" data-p="checklist"><h2>Readiness — the 90% line</h2>
+      <table><tr><th>Capability at greet</th><th>State</th></tr>
+      <tr><td>Crawl: hardware + pipes found, tiers offered with timings</td><td class="ok">live — census + pipes on ${Object.keys(R).length} nodes</td></tr>
+      <tr><td>Conduit hub: all pipes/paths/metrics hosted, full system map</td><td class="ok">live — ${D.hub.system_map.pipe_count} pipes adopted</td></tr>
+      <tr><td>Edge bifurcation: nodes report, conduit advises, placement computed</td><td class="ok">live — ${U.total_model_seats} seats united</td></tr>
+      <tr><td>Expectations stated per tier, comfort gradient honored</td><td class="ok">live</td></tr>
+      <tr><td>Logs categorized by tier; process directory with locations</td><td class="ok">live</td></tr>
+      <tr><td>Help, glossary, searchable contents</td><td class="ok">this page</td></tr>
+      <tr><td>Voice wake-word greeting on a device with mic/cam</td><td class="warn">the 10% — proven in the basement stack; device leg lands in person</td></tr>
+      <tr><td>Personality / work-style evolution with the user</td><td class="warn">the 10% — accrues through dwell, socials and corrections</td></tr></table></div>`),
+    $(`<div class="panel" data-p="united"><h2>United system (all nodes as one)</h2>
+      <table><tr><th>Tier</th><th>Available on</th></tr>${rows}</table>
+      <p class="small"><span class="warn">Single points of capability:</span> ${esc(JSON.stringify(U.single_points_of_capability))}</p>
+      <p class="small dim">${esc(U.hardware_limit)}</p>
+      <h3>Conduit advice right now</h3>
+      <p class="small">${D.advisories.length ? D.advisories.map(a => `To ${esc(a.to)}: ${esc(a.text)}`).join("<br>") : "None — the system is balanced as reported."}</p></div>`),
+    $(`<div class="panel" data-p="social"><h2>Latest node social (hourly dwell digest)</h2><pre>${esc(D.social)}</pre></div>`));
+}
+
+/* ---------- system map ---------- */
+{
+  const pipeRows = [], procRows = [];
+  for (const [n, r] of Object.entries(R)) {
+    for (const p of r.pipes_found) pipeRows.push(
+      `<tr><td>${esc(NODE_NAMES[n] || n)}</td><td><code>${esc(p.id)}</code></td><td>${esc(p.feeds)}</td><td class="lane">${esc(p.lane)}</td></tr>`);
+    for (const pr of (r.watched_processes || [])) procRows.push(
+      `<tr><td>${esc(NODE_NAMES[n] || n)}</td><td><code>${esc(pr.name)}</code></td><td class="small">${esc(pr.location)}</td><td class="small"><code>${esc(pr.exec || "")}</code></td></tr>`);
+  }
+  page("map").append(
+    $(`<div class="panel" data-p="map"><h2>System map — every pipe the conduit hosts</h2>
+      <table><tr><th>Node</th><th>Pipe</th><th>Feed → plugin</th><th>Lane</th></tr>${pipeRows.join("")}</table>
+      <p class="small dim">Metrics: each node's report carries load, RAM, disk and per-tier status;
+      paths and endpoints live in the node's census (expectations.json) beside its report.</p></div>`),
+    $(`<div class="panel" data-p="processes"><h2>Directory — watched processes &amp; locations</h2>
+      <table><tr><th>Node</th><th>Process</th><th>Location</th><th>Exec</th></tr>${procRows.join("") || '<tr><td colspan="4" class="dim">No user services found on the reporting nodes.</td></tr>'}</table></div>`));
+}
+
+/* ---------- node pages ---------- */
+for (const [n, r] of Object.entries(R)) {
+  const t = T[n];
+  const tierRows = Object.entries(r.tiers).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("");
+  const pipeRows = r.pipes_found.map(p => `<tr><td><code>${esc(p.id)}</code></td><td>${esc(p.feeds)}</td><td class="lane">${esc(p.lane)}</td></tr>`).join("");
+  page("node-" + n).append(
+    $(`<div class="panel"><h2>${esc(NODE_NAMES[n] || n)} <span class="dim small">(${esc(r.node)}, ${esc(r.arch)})</span></h2>
+      <p>Roles: <b>${esc(r.roles.join(", "))}</b> · Health: <span class="${t.health === "fresh" ? "ok" : "bad"}">${esc(t.health)}</span>
+      · Budget: <b>${r.budget.max_parallel_model_tasks}</b> model task(s) — ${esc(r.budget.basis)}</p>
+      <p class="small dim">Headroom: load ${r.headroom.load1} (${r.headroom.load_per_thread}/thread) · RAM available ${r.headroom.ram_available_mb} MB · disk free ${r.headroom.disk_free_gb} GB</p>
+      <h3>Tiers on this node</h3><table><tr><th>Tier</th><th>Status</th></tr>${tierRows}</table>
+      <h3>Pipes</h3><table><tr><th>Pipe</th><th>Feed → plugin</th><th>Lane</th></tr>${pipeRows}</table>
+      <h3>Script tiers this node offers</h3><p>${esc(r.script_tier_offers.join(", ") || "the script floor")}</p></div>`));
+}
+
+/* ---------- logs ---------- */
+{
+  const wrap = $(`<div class="panel" data-p="logs"><h2>Log trails — categorized by tier</h2>
+    <p class="small dim">Every conduit transition (snapshot, adoption, release) is written to the
+    trail of the tier it touches. Select a tier:</p><div id="logbtns"></div><pre id="logview"></pre></div>`);
+  page("logs").append(wrap);
+  const view = wrap.querySelector("#logview"), btns = wrap.querySelector("#logbtns");
+  Object.keys(D.logs).forEach((tier, i) => {
+    const b = document.createElement("button"); b.textContent = tier; b.style.marginRight = "6px";
+    b.onclick = () => { view.textContent = D.logs[tier] || "(empty)"; };
+    btns.appendChild(b); if (!i) b.onclick();
+  });
+}
+
+/* ---------- help & glossary ---------- */
+const GLOSSARY = [
+  ["Conduit", "The central ai-core hub that hosts all pipes, paths, metrics, node reports and routing decisions for a system. Everything reports to it; it advises back.", "hub center middle brain"],
+  ["Edge node", "A small ai-core clone on another device (a Pi, a Chromebook) running the same DNA: its own census, pipes and expectation table, reporting to the conduit.", "clone daughter pi raspberry satellite"],
+  ["Bifurcation", "The app splitting itself — and its workload — into tiers and nodes sized to each piece of hardware, instead of one monolith sized to the biggest machine.", "split divide clone subdivision"],
+  ["Seat", "A model's place in memory/CPU/GPU while it works. Seats are taken on announcement, capped for organs, and the conversation seat is pinned so a chat is never evicted.", "load model memory swap load time wait"],
+  ["Tier", "A class of work with its own promise: conversation, deep, vision, image, audio, knowledge, script floor. Each tier degrades along its own ladder, never to zero.", "level class kind"],
+  ["Lane", "How a pipe is served by speed: LIVE (instant), PREQUEUE (grabbed ahead), FALLBACK (degraded → sub-stream), PARALLEL (audio, never queued), PARKED (dark, re-probed), ON-DEMAND (a seat), SERVICE.", "speed queue fast slow delay"],
+  ["Expectation table", "The per-tier promise a node publishes after its census: what runs, where, how fast, and what happens when it can't. Stated before anything is promised to the user.", "promise eta timing how long"],
+  ["Census", "The crawl-time measurement of a box: effective CPU/RAM (quotas, not just specs), GPU, runtimes, models — from which the budget and expectation table are derived.", "crawl hardware measure specs scan"],
+  ["Pipe", "A flow of audio, video, events or data with a measured timing profile (camera stream, mic, model door, web search). The registry recognizes pipes and assigns each a feed and a lane.", "stream feed camera microphone"],
+  ["Feed / plugin", "Where a pipe's data goes to be used: vision/roam, hearing/transcription, archive/segsearch, knowledge/web-lookup. A pipe without a feed is listed, never silently dropped.", "destination consumer"],
+  ["Script floor", "Deterministic scripts and voice commands that work with no model at all. The floor every tier degrades toward — and never below.", "fallback basic commands no model"],
+  ["Snap report", "The single report an edge node sends the conduit after its census: tiers, pipes, budget, headroom, watched processes. The bilateral pipe's upward leg; advisories are the downward leg.", "report heartbeat check-in"],
+  ["Dwell social", "The nodes' hourly five-minute digest: system, connections, stability, progress — for the user and for each node's goals. The conduit's advice rides in it.", "hourly chat meeting digest"],
+  ["United view", "All nodes read as one system: total seats, which tiers live where, and single points of capability. Individually usable, or united for multi-tier edge processing.", "wonder twin combined total together"],
+  ["Single point", "A capability that exists on exactly one node. If that node sleeps, the capability does. The conduit names them so nothing is silently fragile.", "only one fragile risk"],
+  ["Headroom", "A node's spare capacity right now: load per thread, RAM available, disk free. Placement decisions read headroom, not hope.", "spare capacity free load"],
+  ["Comfort gradient", "The user's chosen balance of speed, delay and depth — picked from three options (quick / balanced / deep). The conduit tunes seats and expectations to it.", "preference delay tolerance joy options"],
+  ["Disconnect (bilateral)", "The script that severs pipes from their ad-hoc arrangement into the conduit's hub — and releases them back. Both directions are logged per tier; processes keep flowing throughout.", "sever adopt release takeover undo"],
+  ["Joy calculation", "Weighing promised-vs-felt experience per task: an announced wait that lands on its ETA builds trust; a silent hang spends it. Expectations are set so the math stays positive.", "satisfaction trust eta experience"],
+];
+{
+  const help = page("help");
+  help.append($(`<div class="panel"><h2>Help &amp; glossary</h2>
+    <p class="small dim">Table of contents — <a href="#h-start">Getting started</a> · <a href="#h-tiers">Tiers &amp; seats</a> ·
+    <a href="#h-nodes">Nodes &amp; the social</a> · <a href="#h-disconnect">The disconnect</a> · <a href="#h-glossary">Glossary</a></p>
+    <input type="search" id="gsearch" placeholder="Search help &amp; glossary — try 'slow', 'pi', 'promise', 'undo'…">
+    <div id="gresults"></div>
+    <h3 id="h-start">Getting started</h3>
+    <p>The app crawls your hardware, offers tiers with timings, and — with your go-ahead — adopts every
+    pipe into this hub. From then on it answers and works from its own map of your reality: it knows
+    which node holds which sense, what each task will cost, and it says the cost before starting.</p>
+    <h3 id="h-tiers">Tiers &amp; seats</h3>
+    <p>Conversation is pinned and instant. Specialist organs (sight, deep thought, image-making) take
+    announced, capped seats and leave when done — you are never greeted by a stuck specialist.
+    Anything a tier cannot do degrades one rung and tells you.</p>
+    <h3 id="h-nodes">Nodes &amp; the social</h3>
+    <p>Edge nodes are the same app, subdivided. Each reports hourly in the dwell social; the conduit
+    checks freshness, advises on balance, and places work where the headroom is. Use any node alone,
+    or the united system.</p>
+    <h3 id="h-disconnect">The disconnect</h3>
+    <p><code>disconnect.py adopt</code> hosts all pipes in the hub; <code>release</code> hands them back.
+    Both are logged per tier, and your processes never stop flowing — the conduit hosts the map,
+    the metrics and the decisions, not a replacement for the pipes themselves.</p>
+    <h3 id="h-glossary">Glossary</h3><div id="glist"></div></div>`));
+  const glist = help.querySelector("#glist"), gres = help.querySelector("#gresults");
+  const renderList = (items) => { glist.innerHTML = items.map(([t, d]) =>
+    `<details><summary>${esc(t)}</summary><p>${esc(d)}</p></details>`).join("") || '<p class="dim">No matches.</p>'; };
+  renderList(GLOSSARY);
+  help.querySelector("#gsearch").addEventListener("input", (e) => {
+    const q = e.target.value.toLowerCase().trim();
+    if (!q) { gres.innerHTML = ""; renderList(GLOSSARY); return; }
+    const toks = q.split(/\s+/);
+    const hits = GLOSSARY.filter(([t, d, syn]) => toks.every(tok =>
+      (t + " " + d + " " + syn).toLowerCase().includes(tok)));
+    gres.innerHTML = `<p class="small">${hits.length} match(es) for “${esc(q)}”:</p>`;
+    renderList(hits);
+  });
+}
+
+/* ---------- view modes ---------- */
+const PANEL_VIEW = { simple: ["greeting"], advanced: null, custom: null };
+function applyView(mode) {
+  document.querySelectorAll(".views button").forEach(b => b.classList.toggle("on", b.dataset.view === mode));
+  document.getElementById("custom-ck").style.display = mode === "custom" ? "" : "none";
+  const customOn = {};
+  document.querySelectorAll("#custom-ck input").forEach(c => customOn[c.dataset.panel] = c.checked);
+  document.querySelectorAll("[data-p]").forEach(p => {
+    const key = p.dataset.p;
+    let show = true;
+    if (mode === "simple") show = ["greeting", "united"].includes(key) || p.closest("#page-help");
+    if (mode === "custom") show = customOn[key] !== false;
+    p.style.display = show ? "" : "none";
+  });
+}
+document.querySelectorAll(".views button").forEach(b => b.onclick = () => applyView(b.dataset.view));
+document.querySelectorAll("#custom-ck input").forEach(c => c.onchange = () => applyView("custom"));
+applyView("advanced");
+</script>
+</body>
+</html>
