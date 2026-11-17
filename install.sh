@@ -51,9 +51,9 @@ echo "📦 Step 1: Resolving baseline Linux runtime packages..."
 if command -v apt-get &>/dev/null; then
     apt-get update && apt-get install -y python3 python3-gi python3-gi-cairo libgtk-4-dev gir1.2-gtk-4.0 libadwaita-1-dev gir1.2-adw-1 libgirepository1.0-dev libcairo2-dev curl lshw pciutils ffmpeg
 elif command -v dnf &>/dev/null; then
-    dnf install -y python3 python3-gobject cairo-gobject-devel libgirepository-devel curl lshw pciutils ffmpeg
+    dnf install -y python3 python3-gobject cairo-gobject-devel libgirepository-devel gtk4 libadwaita curl lshw pciutils ffmpeg
 elif command -v pacman &>/dev/null; then
-    pacman -Sy --needed --noconfirm python python-gobject cairo curl lshw pciutils ffmpeg
+    pacman -Sy --needed --noconfirm python python-gobject cairo gtk4 libadwaita curl lshw pciutils ffmpeg
 fi
 
 echo "🧠 Step 2: Auditing system resources..."
