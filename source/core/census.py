@@ -337,12 +337,99 @@ def camera_probe(sys_root="/sys/class/video4linux"):
     return cams
 
 
+def audio_probe(sys_root="/sys/class/sound",
+                proc_cards="/proc/asound/cards"):
+    """The machine's ears and voice: ALSA cards with capture /
+    playback capability. Names and shapes only — no audio is
+    read. The crawl checked for eyes a day before it checked
+    for ears (Zak, 2026-11-18)."""
+    names = {}
+    try:
+        for line in open(proc_cards):
+            parts = line.split(":", 1)
+            head = parts[0].split()
+            if len(parts) == 2 and head and head[0].isdigit():
+                names[f"card{head[0]}"] = parts[1].strip()
+    except Exception:
+        pass
+    cards = []
+    for card in sorted(glob.glob(os.path.join(sys_root, "card[0-9]*"))):
+        cid = os.path.basename(card)
+        cards.append({
+            "card": cid, "name": names.get(cid, cid),
+            "capture": bool(glob.glob(os.path.join(card, "pcm*c"))),
+            "playback": bool(glob.glob(os.path.join(card, "pcm*p")))})
+    return cards
+
+
+def reach_probe(which=shutil.which, home=None):
+    """What this machine is ALREADY connected to — the pipes a
+    crawl must not pretend don't exist (Zak, 2026-11-18: 'I
+    have cams, audio, sensors, system logs, network, vpn, ssh —
+    the crawl should not use less, it should do more').
+    Presence and shape only: no key material is read, no log is
+    opened, no connection is made. Each entry carries a
+    SUGGESTED comparable use — offered to the user for
+    confirmation, never adopted silently."""
+    home = home or os.path.expanduser("~")
+    items = []
+
+    def add(i, kind, found, detail, suggests):
+        items.append({"id": i, "kind": kind, "found": bool(found),
+                      "detail": detail, "suggests": suggests})
+
+    ts, wg = which("tailscale"), which("wg")
+    add("vpn", "network", bool(ts or wg),
+        "Tailscale" if ts else ("WireGuard" if wg
+                                 else "no VPN client found"),
+        "reach your other nodes as one hub")
+    sshd = bool(which("sshd")) or os.path.exists("/usr/sbin/sshd")
+    add("ssh-server", "access", sshd,
+        "sshd installed" if sshd else "no sshd",
+        "let your other nodes reach this one")
+    keys = glob.glob(os.path.join(home, ".ssh", "*.pub"))
+    add("ssh-keys", "access", bool(keys),
+        f"{len(keys)} public key(s) in ~/.ssh" if keys
+        else "no ssh keys in ~/.ssh",
+        "pair this node with the fleet")
+    journal = bool(which("journalctl")) or \
+        os.path.isdir("/var/log/journal")
+    add("system-logs", "records", journal,
+        "journald present" if journal else "no journald found",
+        "dwell can read the machine's own story, with your go-ahead")
+    serial = sorted(glob.glob("/dev/ttyUSB*")
+                    + glob.glob("/dev/ttyACM*"))
+    add("sensors-serial", "sensors", bool(serial),
+        f"{len(serial)} serial device(s): "
+        + ", ".join(serial) if serial else "no serial devices",
+        "a sensor feed for dwell")
+    hwmon = glob.glob("/sys/class/hwmon/hwmon*")
+    add("sensors-hwmon", "sensors", bool(hwmon),
+        f"{len(hwmon)} hardware sensor(s)" if hwmon
+        else "no hwmon sensors",
+        "temperatures and fans in the system monitor")
+    add("docker", "services", bool(which("docker")),
+        "docker present" if which("docker") else "no docker",
+        "container services (cameras, recorders) can join the hub")
+    try:
+        ifaces = sorted(i for i in os.listdir("/sys/class/net")
+                        if i != "lo")
+    except Exception:
+        ifaces = []
+    add("network", "network", bool(ifaces),
+        "interfaces: " + ", ".join(ifaces) if ifaces
+        else "no network interfaces",
+        "the roads the reach map draws")
+    return items
+
+
 def main():
     out_dir = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else "."
     census = {"host": platform.node(), "os": f"{platform.system()} {platform.release()}",
               "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
               "cpu": cpu_probe(), "ram": ram_probe(), "gpus": gpu_probe(),
-              "cameras": camera_probe(),
+              "cameras": camera_probe(), "audio": audio_probe(),
+              "reach": reach_probe(),
               "disk_free_gb": round(shutil.disk_usage(os.path.expanduser("~")).free / 1e9),
               "runtimes": runtime_probe()}
     census["expectations"] = build(census)
