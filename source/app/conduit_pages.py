@@ -27,6 +27,8 @@ from core import census as census_mod
 from core import pairing as pairing_mod
 from core import pipes as pipes_mod
 
+_MODEL_POPUP_SHOWN = False
+
 STATE_DIR = os.path.expanduser("~/.config/ai-core")
 CONDUIT_JSON = os.path.join(STATE_DIR, "conduit.json")
 NODE_DIRS = [os.path.join(STATE_DIR, "nodes"),
@@ -573,6 +575,7 @@ def attach(notebook, on_model_choice=None, on_comfort=None):
                        "measured, not guessed; this takes a few seconds.")
 
     def work():
+        global _MODEL_POPUP_SHOWN
         try:
             state = collect_state()
         except Exception as e:  # the landing must never take the app down
@@ -592,7 +595,11 @@ def attach(notebook, on_model_choice=None, on_comfort=None):
                 GLib.idle_add(fn, state)
             if on_model_choice is not None and state.get("advice") \
                     and load_options()["model_advice_popup"] \
+                    and not _MODEL_POPUP_SHOWN \
                     and state["advice"]["state"] in ("keep", "upgrade", "none"):
+                # Once per process, whoever rebuilds the window:
+                # advice must never stack dialogs.
+                _MODEL_POPUP_SHOWN = True
                 GLib.idle_add(_show_model_dialog, notebook,
                               state["advice"], on_model_choice)
     threading.Thread(target=work, daemon=True).start()

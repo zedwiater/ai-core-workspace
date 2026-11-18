@@ -334,9 +334,15 @@ Terminal=false
 Categories=Development;Utility;
 DESK_EOF
 
-mkdir -p "$REAL_HOME/.config/autostart"
-cp "$DESKTOP_DIR/ai-core.desktop" "$REAL_HOME/.config/autostart/" 2>/dev/null || true
-chown -R "$REAL_USER":"$REAL_USER" "$TARGET_DIR" "$REAL_HOME/.config/autostart" 2>/dev/null || true
+# Autostart is OFF by default — an app that relaunches itself
+# after every reboot, uninvited, is indistinguishable from a
+# pest when it misbehaves (reference laptop, 2026-11-17: crash +
+# autostart + session restore stacked copies until it choked).
+# To enable it deliberately:
+#   cp /usr/share/applications/ai-core.desktop ~/.config/autostart/
+echo "🚪 Autostart is off. The app opens when you open it."
+echo "   (To start it at login instead: cp /usr/share/applications/ai-core.desktop ~/.config/autostart/)"
+chown -R "$REAL_USER":"$REAL_USER" "$TARGET_DIR" 2>/dev/null || true
 
 # --- VALIDATION ---
 echo ""
