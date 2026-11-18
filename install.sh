@@ -4,6 +4,11 @@
 # Includes: uninstall mode, post-install validation, backup guidance
 # ======================================================================
 set -euo pipefail
+# Build banner: a stale checkout announces itself on line one. If
+# this does not say "conduit build", the tree is the old app —
+# stop and re-clone. (Learned 2026-11-17: a failed clone silently
+# left a stale tree in place, and it installed v1 again.)
+echo "🧭 AI Core installer — conduit build (pairing + merge)."
 
 TARGET_DIR="/opt/ai-core"
 SYSTEMD_DIR="/etc/systemd/system"
@@ -145,17 +150,30 @@ fi
 systemctl daemon-reload
 if ! systemctl is-active --quiet ollama.service; then
     systemctl enable ollama.service --now || true
-    sleep 3
 elif $APP_ENV_CHANGED; then
     echo "🔄 Restarting Ollama once so the app's drop-in takes effect..."
     systemctl restart ollama.service || true
-    sleep 3
 fi
+
+# The door gets real time to come up: a single check races the
+# service start and can call a healthy door dead — and the old flow
+# then mistook a dead door for an empty shelf and sailed on to a
+# success banner. Both halves were named on 2026-11-17; the wait
+# below and the INCOMPLETE verdict are the fix.
+wait_for_door() {
+    for _ in $(seq 1 15); do
+        curl -s http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && return 0
+        sleep 2
+    done
+    return 1
+}
+DOOR_OK=false
+if wait_for_door; then DOOR_OK=true; fi
 
 # The shelf decides: existing models are kept, never pulled over.
 # The app's factory default becomes the resident pick on this machine.
 SED_MODEL="$OPTIMAL_MODEL"
-if curl -s http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+if $DOOR_OK; then
     echo "✅ Ollama API responding"
     TAGS_JSON=$(curl -s http://127.0.0.1:11434/api/tags)
     EXISTING_MODELS=$(echo "$TAGS_JSON" | python3 -c "import json,sys; print(' '.join(m['name'] for m in json.load(sys.stdin).get('models', [])))" 2>/dev/null || true)
@@ -198,7 +216,11 @@ print(sorted(names, key=p, reverse=True)[0] if names else '')" 2>/dev/null || tr
         fi
     fi
 else
-    echo "⚠️ Ollama not responding. Install may need manual intervention."
+    echo "🛑 The model door (Ollama) is NOT answering after a 30-second wait."
+    echo "   The base function cannot complete against a silent door: no"
+    echo "   model can be pulled, layered, or verified. The app still"
+    echo "   deploys (it works as an observer), but this install is"
+    echo "   INCOMPLETE — the final banner will say exactly that."
     echo "   Check: journalctl -u ollama -n 20"
 fi
 
@@ -311,21 +333,32 @@ for name in "${MCP_NODES[@]}"; do
         ALL_OK=false
     fi
 done
+# The door is part of the verdict, not a footnote: an install whose
+# talking model never answered is not a successful install.
+if $DOOR_OK; then
+    echo "  ✅ model door (Ollama answering)"
+else
+    echo "  ❌ model door (Ollama NOT answering — install incomplete)"
+    ALL_OK=false
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 if $ALL_OK; then
     echo "✅ AI Core installed successfully!"
+elif ! $DOOR_OK; then
+    echo "⚠️ AI Core installed — INCOMPLETE: the model door is not running."
+    echo "   The app works as an observer; no talking model was installed."
+    echo "   Fix Ollama, then re-run this installer — re-running is safe."
 else
     echo "⚠️ AI Core installed with some inactive services."
     echo "   Check: sudo journalctl -u ai-mcp-* -n 10"
 fi
-if curl -s http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+if $DOOR_OK; then
     echo "🚪 Model door: Ollama is answering on localhost:11434."
 else
-    echo "🚪 Model door: Ollama is NOT answering yet. The app will greet you"
-    echo "   with the remedy on its landing page (start it with:"
-    echo "   sudo systemctl enable --now ollama)."
+    echo "🚪 Model door: silent. Remedy: sudo systemctl enable --now ollama,"
+    echo "   then re-run this installer — it merges and continues safely."
 fi
 echo ""
 echo "📋 Quick reference:"
@@ -340,3 +373,8 @@ echo "   Timeshift: apt install timeshift && sudo timeshift --create"
 echo "   Config:    cp -a /opt/ai-core ~/ai-core-backup"
 echo "   Ollama:    cp -a ~/.ollama ~/ollama-backup"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if ! $DOOR_OK; then
+    echo "🛑 Exiting non-zero: the model door never answered, so this"
+    echo "   install is not complete. See the INCOMPLETE note above."
+    exit 1
+fi
