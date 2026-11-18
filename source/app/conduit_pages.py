@@ -669,7 +669,11 @@ def _show_model_dialog(notebook, advice, on_choice):
         dlg.set_detail(advice["message"])
         dlg.set_buttons(labels)
 
-        def done(d, result):
+        def done(d, result, _user_data=None):
+            # PyGObject calls async callbacks as (source, result,
+            # user_data) — three arguments. A two-argument version
+            # died on every click and left this dialog stuck open
+            # forever (reference laptop, 2026-11-17).
             try:
                 idx = d.choose_finish(result)
             except Exception:
