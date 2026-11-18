@@ -85,7 +85,11 @@ DROPIN_DIR="/etc/systemd/system/ollama.service.d"
 APP_ENV_CHANGED=false
 if ! command -v ollama &>/dev/null; then
     echo "📥 Installing Ollama..."
-    su - "$REAL_USER" -c "curl -fsSL https://ollama.com/install.sh | sh" || true
+    # Run the upstream installer as root — this script already holds
+    # root (see the privilege check). Dropping to the user first made
+    # the upstream script's own sudo calls fail with no TTY to read a
+    # password, leaving no ollama at all (reference laptop, 2026-11-17).
+    curl -fsSL https://ollama.com/install.sh | sh || true
 fi
 
 # An owner-tuned Ollama (any drop-in of theirs) is merged with, not
