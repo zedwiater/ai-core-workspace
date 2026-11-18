@@ -173,6 +173,33 @@ cd ~/ai-core-workspace && git pull && bash update.sh
 (`tests/test_window_chrome.py`): the header-bar construction
 and the sizing guards must be present in the source.
 
+## R12 — The window loads wider than the screen, and the app's own voice "won't fit"
+
+**Symptom.** The window opens stretched past the screen width.
+The model picker calls the app's own paired voice too big,
+and it never seats.
+
+**Cause (proven from a photo of the running app).** Two
+minimum-width traps in the header row: the seat-state label
+carried full refusal sentences (a label's text is its minimum
+width), and the picker entries carried long verdict text —
+together they forced the window wide. Separately, the seat
+gate judged fit against the moment's free memory: with a
+browser open, the paired 3B was refused at 1.6 GB free,
+though it fits the machine and had seated an hour earlier.
+
+**Repair.** Update. Fit is now judged against the machine
+(total RAM minus the OS reserve — the pairing's accounting);
+a model that fits the machine gets its seat attempt, and only
+a model that can never fit is refused. The header speaks in
+short states (● seated / ◌ seating… / ✗ too big for this
+machine) with the full arithmetic in the tooltip, the picker
+entries are short, and the duplicate in-window title is gone.
+
+**Prevention.** Pinned by `tests/test_default_model.py` and
+`tests/test_models_seat.py`: machine-fit matrix, short-label
+cap, ellipsize and machine-gate presence in the client.
+
 ## Reporting any failure
 
 `ai-core-report` builds one redacted file

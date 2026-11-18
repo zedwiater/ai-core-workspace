@@ -31,7 +31,7 @@ from core import hybrid as hybrid_mod
 from core.selfmaint import SelfMaintainer, waiting_proposals
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib, Gdk
+from gi.repository import Gtk, Adw, GLib, Gdk, Pango
 
 OLLAMA_URL = "http://localhost:11434"
 MCP = {"files": (9101, "📁"), "web": (9102, "🌐"), "vision": (9103, "👁"), "shell": (9104, "⚡"),
@@ -167,9 +167,9 @@ class AIClient(Adw.Application):
         # something (a bare name in the picker 'means nothing').
         try:
             self.model_sizes = model_stacks.discover_sizes()
-            self.mem_avail_gb = model_stacks.mem_available_gb()
+            self.mem_total_gb = model_stacks.mem_total_gb()
         except Exception:
-            self.model_sizes, self.mem_avail_gb = {}, 0.0
+            self.model_sizes, self.mem_total_gb = {}, 0.0
         if self.available_models:
             self.model = self.available_models[0]
 
@@ -211,7 +211,7 @@ class AIClient(Adw.Application):
                 _stack_top = _t.get("model")
         _picked = model_stacks.pick_default_model(
             self.available_models, self.model_sizes,
-            self.mem_avail_gb, stack_top=_stack_top)
+            self.mem_total_gb, stack_top=_stack_top)
         if _picked:
             self.model = _picked
 
@@ -224,7 +224,7 @@ class AIClient(Adw.Application):
 
         self.model_store = Gtk.StringList.new(
             [model_stacks.model_label(n, self.model_sizes,
-                                      self.mem_avail_gb)
+                                      self.mem_total_gb)
              for n in self.available_models])
         self.model_dropdown = Gtk.DropDown(model=self.model_store)
         if self.model in self.available_models:
@@ -235,9 +235,15 @@ class AIClient(Adw.Application):
             learn_mod.explainer("model", "plain"))
         header.append(self.model_dropdown)
 
-        # Who is actually serving chat — the stack decides, and the
-        # header says so once a round-trip lands.
+        # Seat state, SHORT — a label's full text is its minimum
+        # width, and the long refusal sentences once stretched
+        # this window past the screen (2026-11-18). The label
+        # ellipsizes; the full story rides in its tooltip.
         self.serving_label = Gtk.Label(label="")
+        self.serving_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.serving_label.set_max_width_chars(42)
+        self.serving_label.set_hexpand(True)
+        self.serving_label.set_xalign(0.0)
         self.serving_label.set_tooltip_text(
             learn_mod.explainer("model", "plain"))
         header.append(self.serving_label)
@@ -258,12 +264,14 @@ class AIClient(Adw.Application):
         self.update_btn.connect("clicked", self._on_update_click)
         header.append(self.update_btn)
 
-        title_lbl = Gtk.Label(label="AI Core Workspace Engine")
-        title_lbl.set_hexpand(True)
-        header.append(title_lbl)
+        # (No second title here — the window's own header bar
+        # already says "AI Core Workspace"; a duplicate title in
+        # this row only crowded it, 2026-11-18.)
 
         # The theme, proposed as the relationship upon opening.
         self.rel_label = Gtk.Label(label="Relationship: …")
+        self.rel_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.rel_label.set_max_width_chars(30)
         self.rel_label.set_has_tooltip(True)
         self.rel_label.connect("query-tooltip", self._theme_tooltip)
         header.append(self.rel_label)
@@ -2348,29 +2356,45 @@ class AIClient(Adw.Application):
     def _seat_current_model(self):
         name = self.model
 
-        def say(text):
-            GLib.idle_add(self.serving_label.set_text, text)
+        def say(short, full=None):
+            def apply():
+                self.serving_label.set_text(short)
+                if full:
+                    self.serving_label.set_tooltip_text(full)
+            GLib.idle_add(apply)
 
         try:
             size = model_stacks.discover_sizes().get(name)
-            avail = None
-            try:
-                for line in open("/proc/meminfo"):
-                    if line.startswith("MemAvailable:"):
-                        avail = int(line.split()[1]) / (1024 ** 2)
-                        break
-            except Exception:
-                pass
-            if size is not None and avail is not None:
-                fits, why = model_stacks.fit_check(size, avail)
+            if size is not None:
+                # The gate is the MACHINE's fit (total RAM minus
+                # the OS reserve — the pairing's accounting), not
+                # this moment's free memory: a busy desktop must
+                # not refuse the machine's own paired voice
+                # (2026-11-18: refused at 1.6 GB free while the
+                # same model had seated fine an hour earlier).
+                fits, why = model_stacks.machine_fit(
+                    size, model_stacks.mem_total_gb())
                 if not fits:
-                    say(f"Not seated — {name}: {why}")
+                    say("✗ too big for this machine",
+                        f"{name}: {why}")
                     return
-            say(f"Seating {name}…")
-            _ok, line = model_stacks.seat_model(name)
-            say(line)
+            say("◌ seating…", f"Seating {name}…")
+            ok, line = model_stacks.seat_model(name)
+            if ok:
+                say("● seated", line)
+            else:
+                avail = model_stacks.mem_available_gb()
+                extra = ""
+                if size is not None and avail:
+                    extra = (" Right now: "
+                             + model_stacks.fit_check(size,
+                                                      avail)[1]
+                             + ". Closing other apps may free "
+                               "enough.")
+                say("✗ didn't seat — details in tooltip",
+                    f"{name}: {line}{extra}")
         except Exception as e:
-            say(f"Seating {name} failed: {e}")
+            say("✗ seating failed", f"{name}: {e}")
 
     def append_bubble(self, text, sender):
         bubble = Gtk.Label(label=text)
