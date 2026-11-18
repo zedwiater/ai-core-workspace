@@ -164,6 +164,145 @@ def grab_frame(camera_name, cmap=None, runner=subprocess.run):
             "message": f"no frame from {camera_name}: {err}"}
 
 
+def _session_env():
+    """A system service starts with no session environment;
+    pulse is unreachable without these (the sound service
+    learned this first — same trap, third door)."""
+    env = dict(os.environ)
+    uid = os.getuid()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS",
+                   f"unix:path=/run/user/{uid}/bus")
+    return env
+
+
+def _pulse_sources(runner=subprocess.run):
+    """Named pulse capture sources, for clip audio. The
+    default source can be an empty port while the real
+    mic sits on a named one (the laptop lesson)."""
+    try:
+        r = runner(["pactl", "list", "short", "sources"],
+                   capture_output=True, text=True, timeout=5,
+                   env=_session_env())
+        return [p.split("\t")[1] for p in
+                (r.stdout or "").splitlines()
+                if len(p.split("\t")) >= 2
+                and "input" in p.split("\t")[1]
+                and not p.split("\t")[1].endswith(".monitor")][:3]
+    except Exception:
+        return []
+
+
+def _audio_mean_db(path, runner=subprocess.run):
+    """mean_volume of a clip's audio, or None."""
+    try:
+        r = runner(["ffmpeg", "-i", path, "-af", "volumedetect",
+                    "-f", "null", "-"], capture_output=True,
+                   text=True, timeout=15, env=_session_env())
+        for line in (r.stderr or "").splitlines():
+            if "mean_volume" in line:
+                raw = line.rsplit(":", 1)[1].strip().split()[0]
+                return None if raw == "-inf" else float(raw)
+    except Exception:
+        pass
+    return None
+
+
+def clip_frame(camera_name, seconds=6, cmap=None,
+               runner=subprocess.run):
+    """A short A/V clip — the dwell loop's timelapse unit
+    (Zak, 2026-11-18: video on a loop, reviewed while
+    listening). Local cameras take video from the device
+    and audio from the pulse source that actually hears
+    (silent audio retries the next source); stream cameras
+    carry their own audio. A clip with no working audio
+    path still lands, labelled audio: none."""
+    cmap = cmap if cmap is not None else camera_map()
+    entry = cmap.get(camera_name)
+    if not entry:
+        known = ", ".join(cmap) or "none"
+        return {"status": "error",
+                "message": f"Unknown camera: {camera_name}. "
+                           f"Cameras here: {known}"}
+    outpath = os.path.join(
+        CACHE_DIR,
+        camera_name.replace("/", "_").replace(" ", "_") + ".mp4")
+    try:
+        os.remove(outpath)
+    except OSError:
+        pass
+    if entry["kind"] == "rtsp":
+        cmd = ["ffmpeg", "-y", "-rtsp_transport", "tcp",
+               "-i", entry["url"], "-t", str(seconds),
+               "-s", "640x480", "-c:v", "mpeg4", "-c:a", "aac",
+               outpath]
+        try:
+            r = runner(cmd, capture_output=True, text=True, env=_session_env(),
+                       timeout=seconds + 25)
+        except Exception as e:
+            return {"status": "error",
+                    "message": f"clip could not run: {e}"}
+        if os.path.exists(outpath) \
+                and os.path.getsize(outpath) > 5000:
+            return {"status": "ok", "camera": camera_name,
+                    "path": outpath,
+                    "size": os.path.getsize(outpath),
+                    "audio": "stream"}
+        return {"status": "error",
+                "message": f"no clip from {camera_name}: "
+                           f"{_ffmpeg_error(r)}"}
+    # local: video from the device, audio walked like the
+    # sound service walks it — silence retries the next one
+    sources = ["default"] + _pulse_sources(runner)
+    errors = []
+    for src in sources:
+        cmd = ["ffmpeg", "-y", "-f", "v4l2",
+               "-i", entry["device"],
+               "-f", "pulse", "-i", src,
+               "-t", str(seconds), "-s", "640x480",
+               "-c:v", "mpeg4", "-c:a", "aac", outpath]
+        try:
+            r = runner(cmd, capture_output=True, text=True, env=_session_env(),
+                       timeout=seconds + 12)
+        except Exception as e:
+            errors.append(f"{src}: could not run ({e})")
+            continue
+        if not (os.path.exists(outpath)
+                and os.path.getsize(outpath) > 5000):
+            errors.append(f"{src}: {_ffmpeg_error(r)}")
+            continue
+        mean = _audio_mean_db(outpath, runner)
+        # digital silence measures -inf / below -90; a real
+        # room, even a quiet one, sits at -50..-80 — the bar
+        # is "measurably above digital zero", not "loud"
+        if mean is not None and mean > -85.0:
+            return {"status": "ok", "camera": camera_name,
+                    "path": outpath,
+                    "size": os.path.getsize(outpath),
+                    "audio": src, "audio_db": mean}
+        errors.append(f"{src}: audio measured silent "
+                      f"({mean} dB mean)")
+    last_err = "; ".join(errors) or "no audio path ran"
+    # video-only last resort — a silent clip beats no clip,
+    # labelled for what it is
+    cmd = ["ffmpeg", "-y", "-f", "v4l2", "-i", entry["device"],
+           "-t", str(seconds), "-s", "640x480",
+           "-c:v", "mpeg4", outpath]
+    try:
+        r = runner(cmd, capture_output=True, text=True, env=_session_env(),
+                   timeout=seconds + 25)
+        if os.path.exists(outpath) \
+                and os.path.getsize(outpath) > 5000:
+            return {"status": "ok", "camera": camera_name,
+                    "path": outpath,
+                    "size": os.path.getsize(outpath),
+                    "audio": "none", "audio_note": last_err}
+    except Exception:
+        pass
+    return {"status": "error",
+            "message": f"no clip from {camera_name}: {last_err}"}
+
+
 def list_cameras(cmap=None):
     cmap = cmap if cmap is not None else camera_map()
     return {"status": "ok", "cameras": list(cmap.keys()),
@@ -183,6 +322,11 @@ def grab(req):
     return grab_frame(req.get("camera", ""))
 
 
+def clip(req):
+    return clip_frame(req.get("camera", ""),
+                      int(req.get("seconds", 6)))
+
+
 def grab_all(req):
     cmap = camera_map()
     results = {}
@@ -193,4 +337,4 @@ def grab_all(req):
 
 if __name__ == "__main__":
     serve("vision", "atmosphere", PORT,
-          {"ping": ping, "list": list_cams, "grab": grab, "grab_all": grab_all})
+          {"ping": ping, "list": list_cams, "grab": grab, "grab_all": grab_all, "clip": clip})
