@@ -348,6 +348,22 @@ FAQ = [
      "stripped) and prints a prefilled GitHub issue link. You read "
      "the file and press submit yourself; nothing is ever sent "
      "automatically."),
+    ("The app is stuck, stacked, or eating the machine — rescue?",
+     "From a text console (Ctrl+Alt+F3, log in): pkill -f "
+     "ai-client.py, then rm -f ~/.config/autostart/ai-core.desktop, "
+     "then Ctrl+Alt+F1 back. Current builds make stacking "
+     "structurally impossible (a one-instance lock, no autostart "
+     "by default). The full repairs glossary — every known "
+     "failure, its cause, its commands — is docs/REPAIRS.md in "
+     "the repo, written for humans and AI alike."),
+    ("The kernel terminated the app for low memory — what was that?",
+     "The OS protecting itself: the app (in the bad case, several "
+     "stacked copies, or a model seated too large for the RAM) "
+     "used memory the system needed. Do not press the "
+     "notification's Restart button. Current builds reserve "
+     "memory for the desktop in the pairing itself and unload "
+     "models when idle on small machines. See R4 in "
+     "docs/REPAIRS.md."),
     ("The installer says Ollama wasn't there — what happened?",
      "On a machine with no model door, current builds install Ollama "
      "as part of setup, pair a model to your hardware, pull it, and "

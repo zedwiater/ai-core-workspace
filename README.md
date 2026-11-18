@@ -233,3 +233,11 @@ pairing honestly steps down and the script floor leads) to a GPU
 workstation. The crawl contract (expectations + pairing, as JSON)
 is written for AI readers as much as human ones: any agent can
 read what a node promises before asking it for work.
+
+## When something breaks
+
+docs/REPAIRS.md is the repairs glossary: every failure this app
+has had in the field, its cause (proven, or suspected and labeled
+as such), the exact repair commands, and the prevention now built
+in — written to be executed verbatim by a human, a shell, or an
+AI. Start there before improvising.
