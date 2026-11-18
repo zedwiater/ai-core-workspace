@@ -476,6 +476,7 @@ class AIClient(Adw.Application):
         for i, page in enumerate(PAGES):
             self.calc_stack.add_named(self._build_calc_page(page), f"page-{i}")
         self.calc_stack.add_named(self._build_calc_paused_page(), "paused")
+        self.calc_stack.add_named(self._build_calc_done_page(), "done")
         vbox.append(self.calc_stack)
 
         self.calc_live = Gtk.Label(label="Depth so far: nothing answered yet")
@@ -505,6 +506,10 @@ class AIClient(Adw.Application):
         self.calc_next_btn = Gtk.Button(label="Continue")
         self.calc_next_btn.connect("clicked", self._calc_next)
         nav.append(self.calc_next_btn)
+        self.calc_done_btn = Gtk.Button(label="✓ Finish — this is my setup")
+        self.calc_done_btn.connect("clicked", self._calc_finish)
+        self.calc_done_btn.set_visible(False)
+        nav.append(self.calc_done_btn)
         vbox.append(nav)
 
         self.calc_status = Gtk.Label(label=self.calc_writer.status_text())
@@ -535,6 +540,18 @@ class AIClient(Adw.Application):
         box.append(lbl)
         btn = Gtk.Button(label="Pick it back up \u2192")
         btn.connect("clicked", lambda *_: self._calc_show_page(self.calc_index))
+        box.append(btn)
+        return box
+
+    def _build_calc_done_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.calc_done_label = Gtk.Label(label="")
+        self.calc_done_label.set_wrap(True)
+        self.calc_done_label.set_xalign(0.0)
+        box.append(self.calc_done_label)
+        btn = Gtk.Button(label="← Review my read")
+        btn.connect("clicked",
+                    lambda *_: self._calc_show_page(len(PAGES) - 1))
         box.append(btn)
         return box
 
@@ -644,6 +661,10 @@ class AIClient(Adw.Application):
         self.calc_skip_btn.set_visible(kind == "statement")
         self.calc_end_btn.set_visible(not last)
         self.calc_later_btn.set_visible(not last)
+        # The summary page is a FINISH, not a dead end (Zak's play
+        # session: "nothing really finishes — only button is go
+        # back"). The Finish button is the summary's primary act.
+        self.calc_done_btn.set_visible(kind == "summary")
         # Curiosity-nudge copy (DRAFT): the Continue label and the
         # teaser line invite the next page open; they never block the
         # exits, which sit in the same row.
@@ -715,13 +736,31 @@ class AIClient(Adw.Application):
 
     def _calc_show_special(self, name):
         self.calc_stack.set_visible_child_name(name)
-        self.calc_progress.set_text("Paused" if name == "paused"
-                                    else "Welcome back")
+        self.calc_progress.set_text(
+            {"paused": "Paused", "done": "Setup complete"}.get(
+                name, "Welcome back"))
         self.calc_teaser.set_text("")
         for btn in (self.calc_back_btn, self.calc_skip_btn,
                     self.calc_end_btn, self.calc_later_btn,
-                    self.calc_next_btn):
+                    self.calc_next_btn, self.calc_done_btn):
             btn.set_visible(False)
+
+    def _calc_finish(self, *_args):
+        # The explicit finish the flow was missing: the summary's
+        # save + theme application runs (it is idempotent), the
+        # completion is SAID, and the state is a page of its own —
+        # not the last question with nowhere to go.
+        self._calc_refresh_summary()
+        depth = compute_depth(self.calc_answers)
+        theme = theme_for_level(depth["level"])
+        self.calc_done_label.set_text(
+            f"✓ Setup complete — saved.\n\n"
+            f"Where the relationship begins: {depth['level_name']}. "
+            f"The app now runs under the {theme['name']} theme, and "
+            f"your answers are on record in the back end.\n\n"
+            f"Nothing here is locked: come back to this tab any "
+            f"time and your read updates with your answers.")
+        self._calc_show_special("done")
 
     def _calc_resume(self, *_args):
         if self.calc_resume_data:
