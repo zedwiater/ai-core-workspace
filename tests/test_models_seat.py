@@ -87,8 +87,13 @@ class ClientWiringTests(unittest.TestCase):
                                 "ai-client.py")).read()
         self.assertIn("target=self._seat_current_model", src)
         self.assertIn("model_stacks.seat_model(name)", src)
-        self.assertIn("model_stacks.fit_check(size, avail)", src)
-        self.assertIn("Not seated", src)
+        # the seat gate is the MACHINE fit (2026-11-18 doctrine:
+        # a momentary free-memory check refused the paired
+        # voice on a busy desktop); the header speaks in short
+        # states, details in the tooltip
+        self.assertIn("model_stacks.machine_fit(", src)
+        self.assertIn("● seated", src)
+        self.assertIn("too big for this machine", src)
 
 
 if __name__ == "__main__":

@@ -247,21 +247,62 @@ def mem_available_gb(path="/proc/meminfo"):
     return 0.0
 
 
-def pick_default_model(available, sizes, avail_gb, stack_top=None):
+def mem_total_gb(path="/proc/meminfo"):
+    """Total RAM; 0.0 when unreadable."""
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0.0
+
+
+# The OS and desktop keep this much, whatever else is running —
+# the same reserve the pairing uses (core/pairing.py).
+OS_RESERVE_GB = 2.0
+
+
+def machine_fit(size_gb, total_gb):
+    """Can this MACHINE hold a model of size_gb — the pairing's
+    question, asked against total RAM minus the OS reserve.
+    Returns (ok, line).
+
+    Distinct from fit_check (this MOMENT's free memory) on
+    purpose: on 2026-11-18 the app's own paired voice was
+    refused a seat because a browser had eaten the momentary
+    free memory, and the picker branded it 'won't fit here' —
+    while the same model had seated fine an hour earlier. A
+    model that fits the machine gets its seat ATTEMPT; only a
+    model that can never fit the machine is refused outright
+    (the 8B-on-7.6 GB case this guard exists for)."""
+    need = size_gb * 1.3
+    usable = total_gb - OS_RESERVE_GB
+    if need <= usable:
+        return True, (f"fits this machine — needs ~{need:.1f} GB "
+                      f"of its {usable:.1f} GB usable")
+    return False, (f"too big for this machine — needs "
+                   f"~{need:.1f} GB (weights {size_gb:.1f} GB + "
+                   f"cache and runtime) but the machine has "
+                   f"{usable:.1f} GB usable after the OS reserve")
+
+
+def pick_default_model(available, sizes, total_gb, stack_top=None):
     """The app's default voice (Zak, 2026-11-18): the app sets
     ITSELF as the default — ai-core-talking, the model it built
     for this machine — then the stack's standing top, then the
-    largest model that FITS. A model that cannot fit is never
-    the default while a fitting one exists: being born pointed
-    at an unseatable model is how the reference laptop died.
-    Falls back to the talking model even unfit (its seat refusal
+    largest model that FITS THE MACHINE (machine_fit: total RAM
+    minus the OS reserve, never the moment's free memory —
+    a busy desktop must not dethrone the paired voice). Falls
+    back to the talking model even unfit (its seat refusal
     explains the arithmetic) and finally to the first model."""
     if not available:
         return None
 
     def fits(name):
         s = sizes.get(name)
-        return s is not None and fit_check(s, avail_gb)[0]
+        return s is not None and machine_fit(s, total_gb)[0]
 
     for name in available:
         if name.split(":")[0] == "ai-core-talking" and fits(name):
@@ -277,21 +318,19 @@ def pick_default_model(available, sizes, avail_gb, stack_top=None):
     return available[0]
 
 
-def model_label(name, sizes, avail_gb):
-    """What the picker shows — a name that MEANS something:
-    whose voice it is, how big it is, and whether it fits on
-    this machine (Zak, 2026-11-18: the bare model box 'means
-    nothing')."""
+def model_label(name, sizes, total_gb):
+    """What the picker shows — SHORT, because a dropdown entry
+    sets the window's minimum width (2026-11-18: the long
+    verdict form stretched the whole window). Whose voice and
+    how big; the fit story lives in the seat state beside the
+    picker and in the Models tab, not in the entry text."""
     bits = []
     if name.split(":")[0] == "ai-core-talking":
-        bits.append("the app's own voice")
+        bits.append("app voice")
     size = sizes.get(name)
     if size:
         bits.append(f"{size:.1f} GB")
-        ok, _why = fit_check(size, avail_gb)
-        bits.append("fits this machine" if ok
-                    else "won't fit here")
-    return name + (" — " + " · ".join(bits) if bits else "")
+    return name + (" · " + " · ".join(bits) if bits else "")
 
 
 def seat_model(model, opener=None, keep_alive="30m", timeout=180):
