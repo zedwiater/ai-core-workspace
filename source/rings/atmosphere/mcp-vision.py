@@ -56,8 +56,16 @@ def local_cameras(sys_root=None, dev_root="/dev"):
                 name = f.read().strip() or name
         except OSError:
             pass
-        found[f"webcam ({name})"] = {"kind": "local",
-                                     "device": device}
+        # One physical camera often registers TWO nodes with
+        # the same name (capture + metadata). Keys must stay
+        # unique per node, or the metadata node silently
+        # replaces the capture node in the map — the exact
+        # failure that made a working webcam 'inappropriate
+        # ioctl' on the reference laptop (2026-11-18).
+        key = f"webcam ({name})"
+        if key in found:
+            key = f"webcam ({name} · {entry})"
+        found[key] = {"kind": "local", "device": device}
     if found:
         first = next(iter(found.values()))
         found = {"webcam": first, **found}
@@ -89,10 +97,32 @@ def _ffmpeg_error(r):
     return tail[-1] if tail else f"ffmpeg exited {r.returncode}"
 
 
-def grab_frame(camera_name, cmap=None):
+def _try_grab(cmd, outpath, runner):
+    # A frame counts only if THIS run produced it — a stale
+    # file at the same path once let a dead node 'succeed'.
+    try:
+        os.remove(outpath)
+    except OSError:
+        pass
+    try:
+        r = runner(cmd, capture_output=True, text=True,
+                   timeout=20)
+    except Exception as e:
+        return None, f"frame grab could not run: {e}"
+    if os.path.exists(outpath) and os.path.getsize(outpath) > 1000:
+        with open(outpath, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        return {"path": outpath, "base64": b64[:200] + "...",
+                "size": os.path.getsize(outpath)}, None
+    return None, _ffmpeg_error(r)
+
+
+def grab_frame(camera_name, cmap=None, runner=subprocess.run):
     """Grab a single frame from a discovered or configured
     camera. Failures name the actual cause — a silent empty
-    result once hid a broken ffmpeg for a whole evening."""
+    result once hid a broken ffmpeg for a whole evening. The
+    plain 'webcam' tries each local node in turn: sibling
+    nodes of one camera are not all capture-capable."""
     cmap = cmap if cmap is not None else camera_map()
     entry = cmap.get(camera_name)
     if not entry:
@@ -104,29 +134,34 @@ def grab_frame(camera_name, cmap=None):
         CACHE_DIR,
         camera_name.replace("/", "_").replace(" ", "_") + ".jpg")
     if entry["kind"] == "local":
-        cmd = ["ffmpeg", "-y", "-f", "v4l2", "-i", entry["device"],
-               "-frames:v", "1", "-s", "640x480",
-               "-update", "1", outpath]
-    else:
-        cmd = ["ffmpeg", "-y", "-rtsp_transport", "tcp",
-               "-i", entry["url"],
-               "-frames:v", "1", "-s", "640x480",
-               "-update", "1", outpath]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=20)
-    except Exception as e:
+        if camera_name == "webcam":
+            candidates = [e for e in cmap.values()
+                          if e["kind"] == "local"]
+        else:
+            candidates = [entry]
+        errors = []
+        for cand in candidates:
+            cmd = ["ffmpeg", "-y", "-f", "v4l2",
+                   "-i", cand["device"],
+                   "-frames:v", "1", "-s", "640x480",
+                   "-update", "1", outpath]
+            got, err = _try_grab(cmd, outpath, runner)
+            if got:
+                return {"status": "ok", "camera": camera_name,
+                        "device": cand["device"], **got}
+            errors.append(f"{cand['device']}: {err}")
         return {"status": "error",
-                "message": f"frame grab could not run: {e}"}
-    if os.path.exists(outpath) and os.path.getsize(outpath) > 1000:
-        with open(outpath, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-        return {"status": "ok", "camera": camera_name,
-                "path": outpath, "base64": b64[:200] + "...",
-                "size": os.path.getsize(outpath)}
+                "message": f"no frame from {camera_name}: "
+                           + "; ".join(errors)}
+    cmd = ["ffmpeg", "-y", "-rtsp_transport", "tcp",
+           "-i", entry["url"],
+           "-frames:v", "1", "-s", "640x480",
+           "-update", "1", outpath]
+    got, err = _try_grab(cmd, outpath, runner)
+    if got:
+        return {"status": "ok", "camera": camera_name, **got}
     return {"status": "error",
-            "message": f"no frame from {camera_name}: "
-                       f"{_ffmpeg_error(r)}"}
+            "message": f"no frame from {camera_name}: {err}"}
 
 
 def list_cameras(cmap=None):

@@ -66,6 +66,7 @@ Then stop and wait for the system output."""
 CSS = b"""
 .bubble-user { background: alpha(@accent_color, 0.15); border-radius: 16px 16px 4px 16px; padding: 12px; margin: 6px 0; }
 .bubble-ai { background: alpha(@card_bg_color, 0.9); border-radius: 16px 16px 16px 4px; padding: 12px; margin: 6px 0; border: 1px solid alpha(@foreground_color, 0.08); }
+.guide-pulse { background: alpha(@accent_color, 0.55); border-radius: 6px; }
 .bubble-system { background: alpha(@warning_color, 0.1); font-family: monospace; border-radius: 8px; padding: 10px; margin: 4px 0; font-size: 0.9em; }
 .mcp-indicator { font-weight: bold; padding: 4px; }
 .sidebar { background: alpha(@window_bg_color, 0.4); border-left: 1px solid alpha(@foreground_color, 0.08); padding: 12px; }
@@ -405,15 +406,19 @@ class AIClient(Adw.Application):
         # is one door among them. Guarded: a conduit failure must
         # never take the client down with it.
         self.agreement_level = "observer"
+        _welcomed = True
         try:
             import conduit_pages
             self.agreement_level = conduit_pages.load_agreement()
+            _welcomed = conduit_pages.load_welcomed()
             conduit_pages.attach(self.notebook,
                                  on_model_choice=self._apply_conduit_model,
                                  on_comfort=self._apply_conduit_comfort,
-                                 on_agreement=self._apply_agreement)
+                                 on_agreement=self._apply_agreement,
+                                 on_welcomed=self._guide_welcomed)
         except Exception:
             pass
+        self._guide_start(_welcomed)
         if hasattr(self, "perm_btn"):
             self.perm_btn.set_label(
                 "Permissions: "
@@ -2272,6 +2277,87 @@ class AIClient(Adw.Application):
         elif self.toy_source is not None:
             GLib.source_remove(self.toy_source)
             self.toy_source = None
+        self._guide_advance(page_num)
+
+    # --- The first-run guide: blinking tabs to the chat ---
+    # Zak (2026-11-18): 'some blinking tabs to follow to the
+    # chat window' — setup should walk a new user Conduit ->
+    # Joy Gradient -> Chat and then STOP. The current step's
+    # tab pulses until visited; the last visit seeds the
+    # get-to-know-you greeting in the chat itself.
+
+    def _guide_start(self, welcomed):
+        self._guide_pages = [0, 1, 6]  # Conduit, Joy, AI Core
+        self._guide_step = None if welcomed else 0
+        self._guide_lit = False
+        self._guide_about = {}
+        if self._guide_step is not None:
+            GLib.timeout_add(650, self._guide_pulse)
+
+    def _guide_tab_label(self, page_num):
+        try:
+            page = self.notebook.get_nth_page(page_num)
+            return self.notebook.get_tab_label(page)
+        except Exception:
+            return None
+
+    def _guide_pulse(self):
+        if getattr(self, "_guide_step", None) is None:
+            return False
+        label = self._guide_tab_label(
+            self._guide_pages[self._guide_step])
+        if label is not None:
+            self._guide_lit = not self._guide_lit
+            if self._guide_lit:
+                label.add_css_class("guide-pulse")
+            else:
+                label.remove_css_class("guide-pulse")
+        return True
+
+    def _guide_clear(self):
+        for p in getattr(self, "_guide_pages", []):
+            label = self._guide_tab_label(p)
+            if label is not None:
+                label.remove_css_class("guide-pulse")
+
+    def _guide_welcomed(self, about):
+        """The welcome card's Done: permissions are chosen,
+        the introductions are saved — on to the Joy Gradient."""
+        self._guide_about = about or {}
+        if getattr(self, "_guide_step", None) == 0:
+            self._guide_step = 1
+            self.notebook.set_current_page(1)
+
+    def _guide_advance(self, page_num):
+        step = getattr(self, "_guide_step", None)
+        if step is None:
+            return
+        if page_num != self._guide_pages[step]:
+            return
+        if step == 0:
+            return  # step 0 ends via the welcome Done button
+        self._guide_step = step + 1
+        if self._guide_step >= len(self._guide_pages):
+            self._guide_step = None
+            self._guide_clear()
+            self._seed_chat_greeting()
+
+    def _seed_chat_greeting(self):
+        about = getattr(self, "_guide_about", {}) or {}
+        name = (about.get("call_name") or "").strip()
+        hello = (f"Hi {name} — setup's done, and this is where "
+                 f"we talk." if name else
+                 "Hi — setup's done, and this is where we talk.")
+        work = (about.get("working_on") or "").strip()
+        if work:
+            hello += (f" You mentioned you're working on "
+                      f"{work} — happy to dig into that, or "
+                      f"anything else.")
+        hello += (" Ask me to use the camera or microphone, "
+                  "search the web, or check the system — the "
+                  "Quick actions below do the same without "
+                  "asking.")
+        GLib.idle_add(self.append_bubble, hello, "ai")
 
     def _apply_agreement(self, level):
         """The Conduit landing's agreement choice lands here; the
