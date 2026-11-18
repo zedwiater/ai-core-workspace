@@ -35,6 +35,11 @@ if [[ "${1:-}" == "uninstall" ]]; then
     done
     rm -f /usr/local/bin/ai-client
     rm -f /usr/local/bin/ai-core-report
+    rm -f /usr/local/bin/ai-core-update
+    systemctl stop ai-core-update.timer 2>/dev/null || true
+    systemctl disable ai-core-update.timer 2>/dev/null || true
+    rm -f "$SYSTEMD_DIR/ai-core-update.service"
+    rm -f "$SYSTEMD_DIR/ai-core-update.timer"
     rm -f "$DESKTOP_DIR/ai-core.desktop"
     rm -f "$REAL_HOME/.config/autostart/ai-core.desktop" 2>/dev/null || true
     rm -rf "$TARGET_DIR"
@@ -57,6 +62,8 @@ fi
 # repo-relative paths, and a launch from elsewhere must not die
 # mid-deploy on a missing file.
 cd "$(dirname "$0")"
+SRC_DIR="$(pwd)"
+SRC_COMMIT="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 
 # --- BACKUP EXISTING INSTALL ---
 if [[ -d "$TARGET_DIR" ]]; then
@@ -384,6 +391,69 @@ DESK_EOF
 echo "🚪 Autostart is off. The app opens when you open it."
 echo "   (To start it at login instead: cp /usr/share/applications/ai-core.desktop ~/.config/autostart/)"
 chown -R "$REAL_USER":"$REAL_USER" "$TARGET_DIR" 2>/dev/null || true
+
+# --- STEP 8: AUTOMATIC UPDATES ---
+# Zak (2026-11-18): 'is there not a way to update the app
+# automatically?' Yes: a daily timer runs ai-core-update, which
+# pulls the checkout this install came from and re-runs the
+# installer ONLY when the pull actually moved (unchanged days
+# are a quiet no-op). The installer it re-runs is this one —
+# merge mode still protects an owner's Ollama setup. The stamp
+# below is how the app itself knows what it is running and can
+# offer the same update from its header. Turn it off any time:
+#   sudo systemctl disable --now ai-core-update.timer
+echo "🔄 Step 8: Automatic updates (daily, only when changed)..."
+mkdir -p "$REAL_HOME/.config/ai-core"
+cat << STAMP_EOF > "$REAL_HOME/.config/ai-core/installed.json"
+{"commit": "$SRC_COMMIT", "src": "$SRC_DIR", "date": "$(date -Iseconds)"}
+STAMP_EOF
+chown "$REAL_USER":"$REAL_USER" "$REAL_HOME/.config/ai-core/installed.json" 2>/dev/null || true
+cat << UPD_EOF > /usr/local/bin/ai-core-update
+#!/usr/bin/env bash
+# AI Core updater — deployed by install.sh. Pulls the checkout
+# the app was installed from and re-runs its installer, but
+# only when the pull moved: an unchanged day is a quiet no-op.
+set -e
+cd "$SRC_DIR"
+BEFORE=\$(git -c safe.directory="$SRC_DIR" rev-parse HEAD 2>/dev/null || echo none)
+git -c safe.directory="$SRC_DIR" pull --ff-only
+AFTER=\$(git -c safe.directory="$SRC_DIR" rev-parse HEAD 2>/dev/null || echo none)
+if [ "\$BEFORE" = "\$AFTER" ]; then
+    echo "AI Core is already current (\$AFTER)."
+    exit 0
+fi
+echo "Updating AI Core: \$BEFORE -> \$AFTER"
+exec bash install.sh
+UPD_EOF
+chmod +x /usr/local/bin/ai-core-update
+cat << 'SVC_EOF' > "$SYSTEMD_DIR/ai-core-update.service"
+[Unit]
+Description=AI Core automatic update (only when the source moved)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ai-core-update
+SVC_EOF
+cat << 'TMR_EOF' > "$SYSTEMD_DIR/ai-core-update.timer"
+[Unit]
+Description=Daily AI Core update check
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TMR_EOF
+systemctl daemon-reload
+systemctl enable --now ai-core-update.timer 2>/dev/null || true
+echo "   ✅ ai-core-update.timer is on (daily). Off switch:"
+echo "      sudo systemctl disable --now ai-core-update.timer"
+echo "   The app also checks on launch and offers the update in"
+echo "   its header when one is waiting."
 
 # --- VALIDATION ---
 echo ""
