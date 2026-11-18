@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AI Core Workspace — merged client with tool interception + file attachment"""
 import gi, json, threading, os, sys, socket, base64, urllib.request
-import random, time, subprocess
+import random, time, subprocess, shutil, platform
 # Renderer choice, made before any Gtk surface exists: GTK 4's
 # Vulkan renderer exhausts swapchain objects on some Intel/Mesa
 # stacks and takes the whole client down (reference laptop,
@@ -21,6 +21,9 @@ from core.protocol import (SERVICE_PORTS, is_tool_call, mcp_call,
 from core.settings import Options
 from core import learn as learn_mod
 from core import models as model_stacks
+from core import census as census_mod
+from core import quick_actions
+from core import websearch as websearch_mod
 from core import toy as toy_mod
 from core import setup as setup_mod
 from core import hybrid as hybrid_mod
@@ -270,6 +273,25 @@ class AIClient(Adw.Application):
         self.chat_list.set_margin_start(16); self.chat_list.set_margin_end(16)
         self.scroll.set_child(self.chat_list)
         chat_vbox.append(self.scroll)
+
+        # Quick Actions — the generalized house hits (Zak's
+        # design, approved 2026-11-18): each button names the
+        # organ it needs, and the button SAYS when the organ is
+        # absent on this machine instead of failing sideways.
+        quick_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                            spacing=6)
+        quick_row.set_margin_top(8)
+        quick_row.set_margin_start(16)
+        quick_row.set_margin_end(16)
+        quick_row.append(Gtk.Label(label="Quick actions:"))
+        self.quick_buttons = {}
+        for action in quick_actions.ACTIONS:
+            qbtn = Gtk.Button(label=action["title"])
+            qbtn.connect("clicked", self._on_quick, action["id"])
+            quick_row.append(qbtn)
+            self.quick_buttons[action["id"]] = qbtn
+        chat_vbox.append(quick_row)
+        self._refresh_quick_actions()
 
         input_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         input_strip.set_margin_top(12); input_strip.set_margin_bottom(12); input_strip.set_margin_start(16); input_strip.set_margin_end(16)
@@ -2329,6 +2351,141 @@ class AIClient(Adw.Application):
                  "tool": "🔧 Running a tool…"}
         if beat in words:
             GLib.idle_add(self._set_thinking, words[beat])
+
+    # --- Quick Actions --------------------------------------------
+    def _quick_cameras(self):
+        try:
+            return census_mod.camera_probe()
+        except Exception:
+            return []
+
+    def _refresh_quick_actions(self):
+        def work():
+            try:
+                resp = mcp_call(SERVICE_PORTS["voice"],
+                                {"action": "ping"}, timeout=1)
+                avail = quick_actions.availability(
+                    cameras=self._quick_cameras(),
+                    voice_ok=isinstance(resp, dict)
+                    and resp.get("status") == "ok")
+
+                def apply():
+                    for action in quick_actions.ACTIONS:
+                        btn = self.quick_buttons.get(action["id"])
+                        if btn is not None:
+                            btn.set_label(quick_actions.button_label(
+                                action, avail))
+                    return False
+                GLib.idle_add(apply)
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_quick(self, btn, action_id):
+        if action_id in ("camera", "grab5"):
+            cams = self._quick_cameras()
+            if not cams:
+                self.append_bubble(
+                    "📷 " + quick_actions.availability()[action_id][1]
+                    + ".", "system")
+                return
+            cam = cams[0]
+            if action_id == "camera":
+                self.append_bubble(f"📷 Asking {cam['name']} for a "
+                                   f"frame…", "system")
+
+                def work():
+                    _ok, line = quick_actions.camera_still(cam)
+                    GLib.idle_add(self.append_bubble, line, "ai")
+                threading.Thread(target=work, daemon=True).start()
+            else:
+                _ok, line = quick_actions.camera_clip(cam)
+                self.append_bubble(line, "ai")
+        elif action_id == "say":
+            text = self.entry.get_text().strip()
+            if not text:
+                self.append_bubble(
+                    "🔊 Type what I should say in the box first, "
+                    "then press Say this aloud.", "system")
+                return
+
+            def work():
+                resp = mcp_call(SERVICE_PORTS["voice"],
+                                {"action": "speak", "text": text})
+                if isinstance(resp, dict) and resp.get("status") == "ok":
+                    line = "🔊 Said it aloud."
+                else:
+                    line = ("🔊 " + quick_actions.availability(
+                        voice_ok=False)["say"][1] + ".")
+                GLib.idle_add(self.append_bubble, line, "ai")
+            threading.Thread(target=work, daemon=True).start()
+        elif action_id == "web":
+            query = self.entry.get_text().strip()
+            if not query:
+                self.append_bubble(
+                    "🔎 Type a question in the box first, then "
+                    "press Search the web.", "system")
+                return
+            self.append_bubble(f"🔎 Searching the web for "
+                               f"“{query}”…", "system")
+
+            def work():
+                try:
+                    results, _secs = websearch_mod.search(query)
+                    text_out = "\n".join(
+                        quick_actions.web_lines(query, results))
+                except Exception as e:
+                    text_out = (f"🔎 The search couldn't run: {e}. "
+                                f"Offline, answers fall back to "
+                                f"stored knowledge — ask in the chat.")
+                GLib.idle_add(self.append_bubble, text_out, "ai")
+            threading.Thread(target=work, daemon=True).start()
+        elif action_id == "status":
+            def work():
+                try:
+                    cpu = census_mod.cpu_probe()
+                    threads = cpu.get("effective_threads", "?")
+                except Exception:
+                    threads = "?"
+                ram_free = 0.0
+                try:
+                    for ln in open("/proc/meminfo"):
+                        if ln.startswith("MemAvailable:"):
+                            ram_free = int(ln.split()[1]) / (1024 ** 2)
+                            break
+                except Exception:
+                    pass
+                try:
+                    disk_free = round(shutil.disk_usage(
+                        os.path.expanduser("~")).free / 1e9)
+                except Exception:
+                    disk_free = 0
+                seated = []
+                try:
+                    req = urllib.request.Request(
+                        "http://127.0.0.1:11434/api/ps")
+                    with urllib.request.urlopen(req, timeout=2) as r:
+                        seated = [m["name"] for m in
+                                  json.loads(r.read().decode())
+                                  .get("models", [])]
+                except Exception:
+                    pass
+                up = 0
+                for port in SERVICE_PORTS.values():
+                    try:
+                        s = socket.create_connection(
+                            ("127.0.0.1", port), timeout=0.3)
+                        s.close()
+                        up += 1
+                    except Exception:
+                        pass
+                lines = quick_actions.system_status(
+                    platform.node(), threads, ram_free, disk_free,
+                    seated, f"{up} of {len(SERVICE_PORTS)} MCP "
+                            f"services answering")
+                GLib.idle_add(self.append_bubble,
+                              "\n".join(lines), "ai")
+            threading.Thread(target=work, daemon=True).start()
 
     def _compute_cycle(self, prompt_text):
         # If an image was attached, route through LLaVA
