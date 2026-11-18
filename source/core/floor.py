@@ -154,6 +154,7 @@ _RING_OF = {
     "voice": "atmosphere",
     "coding": "state",
     "memory": "state",
+    "dwell": "atmosphere",
 }
 EXPECTED_SERVICES = {
     name: {"ring": _RING_OF[name], "port": port}

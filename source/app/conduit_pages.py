@@ -830,6 +830,84 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
     # --- Nodes / Dwell / Roam Watch: text pages ---
     nodes_sw, nodes_buf = _text_view()
     dwell_sw, dwell_buf = _text_view()
+
+    # The Dwell page carries the loop's own switch: the
+    # app-native patrol (core/dwell + the dwell service) is
+    # OFF until the user turns it on, and its live state —
+    # last cycle, queue depth, Telegram — shows right here.
+    from core import dwell as dwell_mod
+    from core.protocol import call_service as _svc
+    dwell_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                        spacing=6)
+    dwell_ctl = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                        spacing=10)
+    dwell_ctl.set_margin_start(12)
+    dwell_ctl.set_margin_top(8)
+    dwell_switch = Gtk.Switch()
+    dwell_switch.set_valign(Gtk.Align.START)
+    dwell_lbl = Gtk.Label(
+        label="Dwell loop — patrol this machine's cameras "
+              "and microphone on a tier-timed loop; attention "
+              "snaps, emergencies go to Telegram")
+    dwell_lbl.set_xalign(0)
+    dwell_lbl.set_wrap(True)
+    dwell_ctl.append(dwell_switch)
+    dwell_ctl.append(dwell_lbl)
+    dwell_box.append(dwell_ctl)
+    dwell_status = Gtk.Label(label="")
+    dwell_status.set_xalign(0)
+    dwell_status.set_margin_start(12)
+    dwell_box.append(dwell_status)
+    dwell_box.append(dwell_sw)
+    _dwell_applying = {"on": False}
+
+    def _dwell_toggled(sw, _p):
+        if _dwell_applying["on"]:
+            return
+        cfg = dwell_mod.load_loop_config()
+        dwell_mod.save_loop_config(sw.get_active(),
+                                   cfg["dwell_s"])
+
+    dwell_switch.connect("notify::active", _dwell_toggled)
+
+    def _dwell_refresh():
+        cfg = dwell_mod.load_loop_config()
+        _dwell_applying["on"] = True
+        dwell_switch.set_active(cfg["enabled"])
+        _dwell_applying["on"] = False
+
+        def work():
+            resp = _svc("dwell", "status")
+            GLib.idle_add(_dwell_show, resp)
+        def _dwell_show(resp):
+            if not isinstance(resp, dict) \
+                    or resp.get("status") != "ok":
+                dwell_status.set_text(
+                    "Dwell service isn't answering — the loop "
+                    "can't run until it is (check the "
+                    "installer validation).")
+                return False
+            tg = resp.get("telegram") or {}
+            tg_line = ("Telegram: linked"
+                       + (f" (@{tg['bot']})" if tg.get("bot")
+                          else "")
+                       if tg.get("token") else
+                       "Telegram: no bot token yet — alerts "
+                       "are off (see Help, Commands you "
+                       "might need)")
+            last = resp.get("last_cycle")
+            when = ("last patrol " +
+                    time.strftime("%H:%M:%S",
+                                  time.localtime(last))
+                    if last else "no patrol yet")
+            dwell_status.set_text(
+                f"{'Loop ON' if resp.get('enabled') else 'Loop OFF'}"
+                f" · every {resp.get('dwell_s')}s · {when} · "
+                f"review queue: {resp.get('queue_depth')} · "
+                f"last level: {resp.get('last_level')} dB\n"
+                f"{tg_line}")
+            return False
+        threading.Thread(target=work, daemon=True).start()
     watch_sw, watch_buf = _text_view()
     watch_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
     links_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -970,9 +1048,13 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
             reach_box.append(rbox)
 
     populates["nodes"] = pop_nodes
-    populates["dwell"] = lambda s: dwell_buf.set_text(
-        dwell_text(s["social"], s["social_path"], s["crawl"],
-                   reach_enabled=load_reach_enabled()))
+    def pop_dwell(state):
+        dwell_buf.set_text(
+            dwell_text(state["social"], state["social_path"],
+                       state["crawl"],
+                       reach_enabled=load_reach_enabled()))
+        _dwell_refresh()
+    populates["dwell"] = pop_dwell
     populates["watch"] = pop_watch
 
     # --- Help & Support ---
@@ -993,7 +1075,7 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
     populates["help"] = lambda s: None
 
     pages = [("Conduit", home_box), ("Joy Gradient", joy_sw),
-             ("Nodes", nodes_box), ("Dwell", dwell_sw),
+             ("Nodes", nodes_box), ("Dwell", dwell_box),
              ("Roam Watch", watch_box), ("Help & Support", help_box)]
     for i, (title, widget) in enumerate(pages):
         if i == 0:

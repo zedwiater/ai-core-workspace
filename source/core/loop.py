@@ -13,6 +13,7 @@ The loop is GUI-free. The client injects three callables:
     execute(tool_string) -> str defaults to execute_tool_payload here
 """
 import subprocess
+import time
 
 from core.models import human_error
 from core.protocol import SERVICE_PORTS, is_tool_call, mcp_call, parse_tool_token
@@ -95,12 +96,39 @@ def execute_tool_payload(tool_string, call=None):
                 parts = []
                 if "heard" in resp and resp["heard"]:
                     parts.append(f"Heard: {resp['heard']}")
+                if resp.get("note"):
+                    parts.append(resp["note"])
+                if "level_db" in resp:
+                    parts.append(f"Level: {resp['level_db']} dB "
+                                 f"via {resp.get('input')}")
+                if resp.get("path"):
+                    parts.append(f"Saved: {resp['path']}")
                 if resp.get("alarm"): parts.append("⚠️ ALARM DETECTED")
                 if resp.get("wake_word"): parts.append("👋 Wake word heard")
                 if "cooldown_remaining_s" in resp:
                     parts.append(f"Cooldown: {resp['cooldown_remaining_s']}s")
                 return "\n".join(parts) if parts else "Sound service OK"
             return f"Sound error: {resp.get('message','Unknown')}"
+
+        elif subsystem == "dwell":
+            resp = call(SERVICE_PORTS["dwell"], params | {"action": action})
+            if resp.get("status") == "ok":
+                if action == "status":
+                    return (f"Dwell loop {'ON' if resp.get('enabled') else 'OFF'}"
+                            f" (every {resp.get('dwell_s')}s), "
+                            f"review queue {resp.get('queue_depth')}, "
+                            f"last level {resp.get('last_level')} dB")
+                if action == "timeline":
+                    lines = [f"{time.strftime('%H:%M:%S', time.localtime(e.get('ts', 0)))} "
+                             f"{e.get('kind')} {e.get('cam', '')} {e.get('level_db', '')}"
+                             for e in resp.get("entries", [])]
+                    return "\n".join(lines) if lines else "No dwell entries yet"
+                if action == "queue":
+                    lines = [f"{e.get('cam')} — {e.get('reason')} — {e.get('path')}"
+                             for e in resp.get("entries", [])]
+                    return "\n".join(lines) if lines else "Review queue is empty"
+                return "Dwell OK"
+            return f"Dwell error: {resp.get('message','Unknown')}"
 
         elif subsystem == "voice":
             resp = call(SERVICE_PORTS["voice"], params | {"action": action})

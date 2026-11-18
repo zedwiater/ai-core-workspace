@@ -31,6 +31,7 @@ SERVICE_PORTS = {
     "voice": 9106,
     "coding": 9107,
     "memory": 9108,
+    "dwell": 9109,
 }
 
 TOOL_PREFIX = "TOOL:"
@@ -79,13 +80,18 @@ def mcp_call(port, payload, host="127.0.0.1", timeout=5):
         return {"status": "error", "message": str(e)}
 
 
-def call_service(service, action, params=None):
+def call_service(service, action, params=None, timeout=None):
     """Call a service by name: payload is params merged with the action,
     the action key winning — the merge order the client has always used.
+    Slow organs (a mic capture chain, an RTSP grab) need a longer
+    timeout than the default — pass it explicitly.
     """
     payload = dict(params or {})
     payload["action"] = action
-    return mcp_call(SERVICE_PORTS[service], payload)
+    if timeout is None:
+        return mcp_call(SERVICE_PORTS[service], payload)
+    return mcp_call(SERVICE_PORTS[service], payload,
+                    timeout=timeout)
 
 
 # --- Response constructors (service side) ------------------------------

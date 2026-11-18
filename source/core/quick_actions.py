@@ -20,6 +20,8 @@ ACTIONS = [
      "absent": "no camera"},
     {"id": "say", "title": "🔊 Say this aloud", "organ": "voice",
      "absent": "voice service off"},
+    {"id": "record", "title": "🎙️ Record the room",
+     "organ": "microphone", "absent": "no microphone"},
     {"id": "web", "title": "🔎 Search the web", "organ": "web",
      "absent": "offline"},
     {"id": "status", "title": "🩺 System status", "organ": None,
@@ -33,13 +35,17 @@ _REASONS = {
              "nothing to speak with",
     "web": "the web didn't answer the reachability check — "
            "this one needs the network",
+    "microphone": "no microphone was found on this machine — "
+                  "the crawl checks the sound devices, and "
+                  "this box reported no way to hear",
 }
 
 
-def availability(cameras=(), voice_ok=False, web_ok=True):
+def availability(cameras=(), voice_ok=False, web_ok=True,
+                 mic_ok=False):
     """{action_id: (available, reason)} — reason '' when available."""
     organs = {"camera": bool(cameras), "voice": bool(voice_ok),
-              "web": bool(web_ok)}
+              "web": bool(web_ok), "microphone": bool(mic_ok)}
     out = {}
     for a in ACTIONS:
         organ = a["organ"]
