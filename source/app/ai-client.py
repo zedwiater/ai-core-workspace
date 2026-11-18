@@ -269,6 +269,9 @@ class AIClient(Adw.Application):
         chat_vbox.append(floor_row)
 
         self.scroll = Gtk.ScrolledWindow()
+        self.scroll.set_policy(Gtk.PolicyType.NEVER,
+                               Gtk.PolicyType.AUTOMATIC)
+        self.scroll.set_propagate_natural_height(False)
         self.scroll.set_vexpand(True)
         self.chat_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.chat_list.set_margin_start(16); self.chat_list.set_margin_end(16)
@@ -360,7 +363,30 @@ class AIClient(Adw.Application):
         except Exception:
             pass
         self.notebook.connect("switch-page", self._on_page_switch)
-        self.win.set_content(self.notebook)
+        # A window needs its titlebar (field report 2026-11-18:
+        # no way to move the window, no X to close it, sizing
+        # weird). set_content(notebook) alone gives GTK4 no
+        # header bar, and on Wayland there is no server-side
+        # decoration to fall back on. The libadwaita pattern:
+        # a ToolbarView whose top bar is a HeaderBar — it
+        # carries the window controls and the drag surface.
+        # The notebook is scrollable so thirteen tabs cannot
+        # force a giant minimum width, and the window gets a
+        # sane floor size.
+        self.notebook.set_scrollable(True)
+        self.win.set_size_request(720, 480)
+        try:
+            toolbar = Adw.ToolbarView()
+            header = Adw.HeaderBar()
+            header.set_title_widget(
+                Adw.WindowTitle(title="AI Core Workspace",
+                                subtitle="your machine, your AI"))
+            toolbar.add_top_bar(header)
+            toolbar.set_content(self.notebook)
+            self.win.set_content(toolbar)
+        except Exception:
+            self.win.set_titlebar(Gtk.HeaderBar())
+            self.win.set_content(self.notebook)
         self.win.present()
 
         threading.Thread(target=self._monitor_services, daemon=True).start()
