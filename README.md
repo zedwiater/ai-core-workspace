@@ -175,6 +175,10 @@ Built with $20 of OpenRouter credits and too many late nights. Because local AI 
 
 ## AI Core refinement — the conduit release (2026-11-17)
 
+**The one-line test (Zak, 2026-11-18):** this app should give any
+bare minimum and up hardware and user AI that is relevant to them
+and the environment. Every feature answers to that line.
+
 A day's measured work on top of v1, proven live on a three-node home
 system (PC + Pi 5 + low VM) before it was pushed. The promise: drop the
 core on any hardware and it crawls what it actually has, publishes an
