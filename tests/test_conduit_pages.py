@@ -102,9 +102,11 @@ class TestModelAdvice(unittest.TestCase):
         self.assertEqual(a["resident"], "george-14:latest")
 
     def test_small_resident_gets_upgrade_advice(self):
+        # The pairing (base function) for 16 GB / no GPU is the 14B
+        # on a CPU seat — the advice names it, not a RAM brochure.
         a = cp.model_advice(fake_crawl(), [{"name": "qwen2.5:3b"}])
         self.assertEqual(a["state"], "upgrade")
-        self.assertEqual(a["fitted"], "qwen3.5:9b")
+        self.assertEqual(a["fitted"], "qwen2.5:14b")
 
     def test_empty_shelf_offers_the_fit(self):
         a = cp.model_advice(fake_crawl(), [])

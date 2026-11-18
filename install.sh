@@ -61,17 +61,40 @@ elif command -v pacman &>/dev/null; then
     pacman -Sy --needed --noconfirm python python-gobject cairo gtk4 libadwaita curl lshw pciutils ffmpeg
 fi
 
-echo "🧠 Step 2: Auditing system resources..."
+echo "🧠 Step 2: Measuring hardware aptitude — the base function pairs it with a known model..."
 TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 TOTAL_RAM_GB=$(( TOTAL_RAM_KB / 1024 / 1024 ))
 echo "📊 Detected RAM: ${TOTAL_RAM_GB}GB"
 
-if [ "$TOTAL_RAM_GB" -ge 16 ]; then
-    OPTIMAL_MODEL="qwen3.5:9b"
-    echo "✅ Selected: $OPTIMAL_MODEL"
+# Aptitude -> known model -> layer plan (core/pairing.py). The same
+# pairing drives the first-launch popup, so installer and app agree.
+OPTIMAL_MODEL=""
+PAIR_MODE=""; PAIR_GPU_LAYERS=""; PAIR_TOTAL_LAYERS=""
+PAIR_DIR=$(mktemp -d)
+if python3 source/core/census.py --out "$PAIR_DIR" >/dev/null 2>&1; then
+    PAIR_LINE=$(python3 - "$PAIR_DIR" <<'PAIR_EOF' 2>/dev/null || true
+import json, os, sys
+sys.path.insert(0, "source")
+from core import pairing
+c = json.load(open(os.path.join(sys.argv[1], "expectations.json")))
+p = pairing.pair(c)
+gl = "" if p["gpu_layers"] is None else str(p["gpu_layers"])
+tl = "" if p["total_layers"] is None else str(p["total_layers"])
+print(f"{p['model']}|{p['mode']}|{gl}|{tl}")
+PAIR_EOF
+)
+    if [ -n "$PAIR_LINE" ]; then
+        IFS='|' read -r OPTIMAL_MODEL PAIR_MODE PAIR_GPU_LAYERS PAIR_TOTAL_LAYERS <<< "$PAIR_LINE"
+    fi
+fi
+if [ -n "$OPTIMAL_MODEL" ]; then
+    echo "🎙️ Paired: $OPTIMAL_MODEL — $PAIR_MODE"
+    [ -n "$PAIR_GPU_LAYERS" ] && echo "   Layers: $PAIR_GPU_LAYERS of $PAIR_TOTAL_LAYERS on the GPU (set when the talking model is created)"
 else
-    OPTIMAL_MODEL="qwen3:8b"
-    echo "⚠️ Limited memory: $OPTIMAL_MODEL"
+    # The pairing could not run in this environment: fall back to
+    # the coarse RAM rule rather than dying on the base function.
+    if [ "$TOTAL_RAM_GB" -ge 16 ]; then OPTIMAL_MODEL="qwen3.5:9b"; else OPTIMAL_MODEL="qwen3:8b"; fi
+    echo "⚠️ Pairing unavailable — coarse fallback selected: $OPTIMAL_MODEL"
 fi
 
 echo "🎮 Step 3: GPU detection..."
@@ -149,8 +172,27 @@ names = [m['name'] for m in json.load(sys.stdin).get('models', [])]
 print(sorted(names, key=p, reverse=True)[0] if names else '')" 2>/dev/null || true)
         [ -n "$PICK" ] && SED_MODEL="$PICK"
     else
-        echo "📥 Empty shelf — pulling the fitted model: $OPTIMAL_MODEL"
-        su - "$REAL_USER" -c "ollama pull $OPTIMAL_MODEL 2>/dev/null" || echo "⚠️ Model pull deferred (run: ollama pull $OPTIMAL_MODEL)"
+        echo "📥 Empty shelf — pulling the paired model: $OPTIMAL_MODEL"
+        if su - "$REAL_USER" -c "ollama pull $OPTIMAL_MODEL 2>/dev/null"; then
+            # Set its layers: the pairing's GPU layer count becomes
+            # the talking model's own definition. The base model
+            # stays on the shelf untouched; ai-core-talking is the
+            # app's voice, layered for this hardware.
+            if [ -n "$PAIR_GPU_LAYERS" ]; then
+                MODFILE=$(mktemp /tmp/ai-core-modelfile.XXXXXX)
+                chmod 644 "$MODFILE"
+                printf "FROM %s\nPARAMETER num_gpu %s\n" "$OPTIMAL_MODEL" "$PAIR_GPU_LAYERS" > "$MODFILE"
+                if su - "$REAL_USER" -c "ollama create ai-core-talking -f $MODFILE" 2>/dev/null; then
+                    echo "🎙️ Talking model set: ai-core-talking ($OPTIMAL_MODEL, $PAIR_GPU_LAYERS of $PAIR_TOTAL_LAYERS layers on the GPU)"
+                    SED_MODEL="ai-core-talking"
+                else
+                    echo "⚠️ Layer-setting deferred — the app will use $OPTIMAL_MODEL directly."
+                fi
+                rm -f "$MODFILE"
+            fi
+        else
+            echo "⚠️ Model pull deferred (run: ollama pull $OPTIMAL_MODEL)"
+        fi
     fi
 else
     echo "⚠️ Ollama not responding. Install may need manual intervention."

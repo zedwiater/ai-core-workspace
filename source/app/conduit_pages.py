@@ -24,6 +24,7 @@ import glob, json, os, platform, shutil, sys, time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from core import census as census_mod
+from core import pairing as pairing_mod
 from core import pipes as pipes_mod
 
 STATE_DIR = os.path.expanduser("~/.config/ai-core")
@@ -98,6 +99,15 @@ def expectation_table_text(crawl):
            f"effective threads ({c['cpu']['effective_source']}); load {c['cpu']['load1']}",
            f"RAM: {c['ram']['effective_mb']} MB effective ({c['ram']['effective_source']}); "
            f"disk free {c['disk_free_gb']} GB", ""]
+    try:
+        p = pairing_mod.pair(c)
+        layers = (f", {p['gpu_layers']}/{p['total_layers']} layers on the GPU"
+                  if p["gpu_layers"] is not None else "")
+        out.append(f"Pairing (fresh shelf): {p['model']} — {p['mode']}{layers}. "
+                   f"{p['tier_basis']}.")
+        out.append("")
+    except Exception:
+        pass
     for t in c["expectations"]["tiers"]:
         exp = t.get("expectation") or t.get("announcement", "")
         if t.get("latency"):
@@ -569,13 +579,6 @@ def _params_b(name):
     m = re.search(r"-(\d+(?:\.\d+)?)\b", (name or "").lower())
     return float(m.group(1)) if m else None
 
-def fitted_model(ram_mb):
-    """The installer's fit rule, mirrored so the popup and the
-    installer never give different advice on the same machine."""
-    if (ram_mb or 0) >= 16 * 1024:
-        return "qwen3.5:9b", 9.0
-    return "qwen3:8b", 8.0
-
 def fetch_tags():
     """The door's shelf, or None if the door isn't answering."""
     try:
@@ -586,8 +589,11 @@ def fetch_tags():
         return None
 
 def model_advice(crawl, tags):
-    ram = crawl["census"]["ram"]["effective_mb"]
-    fitted, fitted_p = fitted_model(ram)
+    # The base function decides the fit: aptitude -> known model.
+    # The popup, the installer and the greeting all read this one
+    # pairing, so they can never give different advice.
+    p = pairing_mod.pair(crawl["census"])
+    fitted, fitted_p = p["model"], p["params_b"]
     if tags is None:
         return {"state": "door-silent", "fitted": fitted,
                 "message": "The model door (Ollama, localhost:11434) isn't "
@@ -611,8 +617,9 @@ def model_advice(crawl, tags):
                            f"hardware ({fitted}). Advice: keep your current "
                            "model. Nothing was pulled, nothing was changed."}
     return {"state": "upgrade", "resident": resident, "fitted": fitted,
-            "message": f"Your largest resident model is {resident}; the fit "
-                       f"for your hardware is {fitted}. You can pull the "
+            "message": f"Your largest resident model is {resident}; the "
+                       f"pairing for your hardware is {fitted} "
+                       f"({p['mode']}). You can pull the "
                        "better fit now (it downloads in the background and "
                        "your current model keeps working), or keep what you "
                        "have — the choice is yours, and nothing happens "

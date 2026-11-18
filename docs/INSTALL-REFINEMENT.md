@@ -94,3 +94,14 @@ The landing also carries plain-language switches for the script
 behaviors (model-advice popup, clickable service doors,
 new-arrival suggestions) — each persists to
 ~/.config/ai-core/conduit.json and is read by the behavior it names.
+
+## The base function (2026-11-17, Zak's definition)
+
+Install = measure aptitude, pair with a KNOWN model, install it,
+set its layers, and set the tiers against the talking model.
+core/pairing.py is that function — one pairing read by the
+installer (Step 2 choice; on an empty shelf it pulls the paired
+model and creates ai-core-talking with the pairing's GPU layer
+count), the first-launch popup, and the landing's expectation
+table, so the three can never disagree. The old RAM-threshold rule
+survives only as the fallback when the pairing cannot run.
