@@ -202,6 +202,68 @@ def probe_entry(entry, opener=None, timeout=3):
         return {"state": "unreachable", "detail": f"no answer ({e})"}
 
 
+def discover_sizes(opener=None, base_url=OLLAMA_URL, timeout=3):
+    """{model name: size GB} from /api/tags; {} when silent."""
+    opener = opener or _opener
+    try:
+        _code, data = opener("GET", f"{base_url}/api/tags",
+                             timeout=timeout)
+        return {m["name"]: round(m.get("size", 0) / (1024 ** 3), 2)
+                for m in data.get("models", [])
+                if isinstance(m, dict) and "name" in m}
+    except Exception:
+        return {}
+
+
+def fit_check(size_gb, avail_gb):
+    """Can this machine seat a model of size_gb right now?
+
+    Returns (ok, line). The need is the weights x 1.3 — KV cache
+    and runtime ride on top — and a refusal names the arithmetic.
+    On 2026-11-17 an unguarded 8B seat on a 7.6 GB laptop (3.1 GB
+    free, no swap) got the whole Ollama service OOM-killed by the
+    kernel; the app must refuse that seat before the kernel has
+    to. Never raises.
+    """
+    need = size_gb * 1.3
+    if need <= avail_gb:
+        return True, (f"fits — needs ~{need:.1f} GB of the "
+                      f"{avail_gb:.1f} GB free")
+    return False, (f"needs ~{need:.1f} GB free (weights "
+                   f"{size_gb:.1f} GB + cache and runtime) but only "
+                   f"{avail_gb:.1f} GB is free — seating it would "
+                   f"get Ollama killed by the kernel")
+
+
+def seat_model(model, opener=None, keep_alive="30m", timeout=180):
+    """Actually load a model into Ollama, then PROVE the seat via
+    /api/ps. Returns (ok, line); never raises. Selecting a model
+    in the app must seat it — a shelf listing is not a seat
+    (Zak's play-session finding, 2026-11-17: ollama ps sat empty
+    while the app ran)."""
+    opener = opener or _opener
+    try:
+        opener("POST", f"{OLLAMA_URL}/api/generate",
+               payload={"model": model, "prompt": "",
+                        "keep_alive": keep_alive, "stream": False},
+               timeout=timeout)
+    except Exception as e:
+        return False, f"{model} could not be seated: {e}"
+    try:
+        _code, data = opener("GET", f"{OLLAMA_URL}/api/ps", timeout=5)
+        for m in data.get("models", []):
+            if m.get("name") == model:
+                gb = round(m.get("size", 0) / (1024 ** 3), 1)
+                where = m.get("details", {}).get("family", "model")
+                return True, (f"Seated: {model} resident in Ollama "
+                              f"({gb} GB, {where})")
+    except Exception as e:
+        return False, (f"{model} was asked to seat but the proof "
+                       f"read failed: {e}")
+    return False, (f"{model} was asked to seat but does not appear "
+                   f"in ollama ps — not seated")
+
+
 def resolve_chat_entry(stacks, policy="draft", budget_ok=True,
                        opener=None, timeout=3):
     """Pick who serves chat: the first reachable, policy-allowed
