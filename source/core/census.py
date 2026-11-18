@@ -320,11 +320,29 @@ except Exception:
         _pairing_mod = None
 
 
+def camera_probe(sys_root="/sys/class/video4linux"):
+    """The machine's eyes: video capture devices, name + node,
+    metadata only — no frames are ever read by a crawl. The
+    first version of this crawl never looked, and reported a
+    laptop with a webcam as a machine without one (Zak,
+    2026-11-18)."""
+    cams = []
+    for node in sorted(glob.glob(os.path.join(sys_root, "video*"))):
+        dev = "/dev/" + os.path.basename(node)
+        try:
+            name = open(os.path.join(node, "name")).read().strip()
+        except Exception:
+            name = ""
+        cams.append({"device": dev, "name": name or dev})
+    return cams
+
+
 def main():
     out_dir = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else "."
     census = {"host": platform.node(), "os": f"{platform.system()} {platform.release()}",
               "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
               "cpu": cpu_probe(), "ram": ram_probe(), "gpus": gpu_probe(),
+              "cameras": camera_probe(),
               "disk_free_gb": round(shutil.disk_usage(os.path.expanduser("~")).free / 1e9),
               "runtimes": runtime_probe()}
     census["expectations"] = build(census)
