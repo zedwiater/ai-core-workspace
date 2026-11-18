@@ -16,6 +16,43 @@ No API keys. No internet required. Just Ollama on localhost:11434.
 
 ---
 
+## v1 (2026-11-13) — the full app
+
+The client grew its doors, all behind a calm main surface:
+
+- **Joy Calculator + themes** — a short agree/disagree instrument
+  sets the relationship depth (L1–L5); the depth becomes the
+  standing theme on open. The **base floor** checks all 8 services
+  on wake and on a 15-minute dwell — alignment monitors only on
+  those beats, in every theme.
+- **Options** — patience, cadence scaling, senses, redundancy and
+  cloud posture, each choice with its cost on its face, persisted
+  through the memory service.
+- **Models** — per-slot stacks (chat / reason / summarizer):
+  Ollama discovery or any OpenAI-compatible endpoint; the first
+  reachable entry the standing policy allows serves, and says so.
+- **Learn** — the back story and the technical receipts, in three
+  reading layers; the same layers drive every explainer tooltip.
+- **Setup** — a plan-first bootstrap for a fresh Linux box:
+  read-only inspection, cost announced up front, a privilege
+  comfort gradient (no silent sudo), home-folder-minimum mode,
+  hardware-sized local models, SSH pairing, guided chat doors.
+- **Self-maintenance** — on the floor's beats the app censuses
+  its own declared surfaces, repairs the mechanical with backups
+  and receipts, and files the rest as proposals for the owner's
+  red pen. New services join by **label + route** only.
+- **Parent / daughter hybrid** — one install can run as a parent,
+  a sensing daughter (hash-chained briefs, no raw media), or both.
+- **The Eddy Toy** — a small un-harnessed pond. Poke it.
+
+Instructions live twice: `docs/INSTRUCTIONS_PLAIN.md` for humans,
+`docs/INSTRUCTIONS_AI.md` as an executable spec for agents. The
+design record is `docs/APP_EXPERIENCE_AND_HARNESS.md`; the
+geometry is `docs/GEOMETRIC_NESTING.md`. Tests:
+`python3 -m unittest discover -s tests -t .` (119 checks).
+
+---
+
 ## The 8 MCP Micro-Services
 
 All run as systemd services, restarted automatically if they crash.
@@ -48,7 +85,7 @@ Or without installing (just need Ollama):
 
 ```bash
 # Start MCP services manually
-for f in source/mcp/mcp-*.py; do python3 "$f" &; done
+for f in source/rings/*/mcp-*.py; do python3 "$f" &; done
 
 # Run the client
 python3 source/app/ai-client.py
@@ -67,11 +104,11 @@ TOOL:files:write:{"path":"<path>","content":"<text>"}
 TOOL:files:search:{"pattern":"<glob>","dir":"<dir>"}
 TOOL:web:fetch:{"url":"<url>"}
 TOOL:web:extract:{"url":"<url>"}
-TOOL:vision:capture:{"camera":"<name>"}
-TOOL:vision:list_cameras:{}
-TOOL:memory:store:{"key":"<name>","value":"<data>"}
-TOOL:memory:recall:{"key":"<name>"}
-TOOL:memory:list_keys:{}
+TOOL:vision:grab:{"camera":"<name>"}
+TOOL:vision:list:{}
+TOOL:memory:set:{"key":"<name>","value":"<data>"}
+TOOL:memory:get:{"key":"<name>"}
+TOOL:memory:list:{}
 TOOL:coding:execute:{"code":"<python>"}
 TOOL:coding:eval:{"expression":"<expr>"}
 TOOL:sound:listen:{"duration":2}
@@ -86,18 +123,28 @@ TOOL:voice:alert:{"tone":"attention|alarm"}
 ```
 ├── install.sh                  # Smart installer (RAM/GPU detection, uninstall)
 ├── README.md                   # This file
+├── docs/
+│   └── GEOMETRIC_NESTING.md    # Why the tree is shaped this way
 ├── source/
 │   ├── app/
-│   │   └── ai-client.py        # GTK4/Libadwaita client (327 lines)
-│   ├── mcp/
-│   │   ├── mcp-shell.py        # Shell execution (port 9104)
-│   │   ├── mcp-files.py        # Read/write/search files (9101)
-│   │   ├── mcp-web.py          # Fetch + HTML extract (9102)
-│   │   ├── mcp-vision.py       # 9 RTSP cameras (9103)
-│   │   ├── mcp-sound.py        # Wake word + alarm detection (9105)
-│   │   ├── mcp-voice.py        # TTS via edge-tts/espeak (9106)
-│   │   ├── mcp-coding.py       # Python code execution (9107)
-│   │   └── mcp-memory.py       # SQLite key-value store (9108)
+│   │   └── ai-client.py        # GTK4/Libadwaita client (chat + Joy Calculator tab)
+│   ├── core/                   # The balanced center — shared by everything
+│   │   ├── protocol.py         # TOOL: tokens, wire format, socket caller
+│   │   ├── ring_service.py     # The register→serve→report-health lifecycle
+│   │   ├── loop.py             # The Intercept & Compute tool loop
+│   │   └── intake.py           # Joy Calculator engine (relationship depth)
+│   ├── rings/
+│   │   ├── state/              # Inner ring — holds state
+│   │   │   ├── mcp-memory.py   # SQLite key-value store (9108)
+│   │   │   └── mcp-coding.py   # Python code execution (9107)
+│   │   ├── actuation/          # Middle ring — acts on the machine
+│   │   │   ├── mcp-files.py    # Read/write/search files (9101)
+│   │   │   └── mcp-shell.py    # Shell execution (9104)
+│   │   └── atmosphere/         # Outer ring — world-facing
+│   │       ├── mcp-web.py      # Fetch + HTML extract (9102)
+│   │       ├── mcp-vision.py   # 9 RTSP cameras (9103)
+│   │       ├── mcp-sound.py    # Wake word + alarm detection (9105)
+│   │       └── mcp-voice.py    # TTS via edge-tts/espeak (9106)
 │   └── config.json             # Default configuration
 ```
 
@@ -124,3 +171,65 @@ Removes MCP services, desktop entry, and /opt/ai-core. Preserves Ollama models a
 ---
 
 Built with $20 of OpenRouter credits and too many late nights. Because local AI should actually do things, not just chat.
+---
+
+## AI Core refinement — the conduit release (2026-11-17)
+
+A day's measured work on top of v1, proven live on a three-node home
+system (PC + Pi 5 + low VM) before it was pushed. The promise: drop the
+core on any hardware and it crawls what it actually has, publishes an
+honest per-tier expectation table, and subdivides itself across the
+user's machines under one conduit — with receipts, not vibes.
+
+- **source/core/census.py** — effective-capacity crawl (quotas, not
+  spec sheets) -> parallel-task budget + expectation table.
+- **source/core/pipes.py** — pipe registry + recognizer; measured
+  lanes (LIVE / PREQUEUE / FALLBACK / PARALLEL / PARKED / ON-DEMAND /
+  SERVICE); script-tier offers from feed combinations.
+- **source/core/websearch.py** — free-tier web leg with an expectation
+  explainer on every run. Low tier is a tier, not a handicap.
+- **source/core/edge/** — the bifurcation kit: `edge_report.py` (a
+  node grades itself, emits one snap report), `conduit.py` (tab
+  model, advisories, placement, hardware limit), `node_social.py`
+  (hourly dwell-social digest), `disconnect.py` (bilateral
+  snapshot/adopt/release into the hub; tier log trails),
+  `hub_watch.py` (active crawl-diff; integration suggestions with
+  web-UI link cards and credential pointers — never secrets).
+- **docs/BENCH-20261117.md** — the low/mid proofs: divided workload,
+  contention behavior, ETA honesty (predicted 14.6s, measured 14.6s).
+- **docs/conduit-app/** — the conduit hub UI prototype (baked by
+  make_data.py): node tabs, system map, process directory, tier logs,
+  Simple/Advanced/Custom views, searchable help + glossary.
+
+First united system: 6 model seats across 3 nodes; vision and image
+generation named as single points; the saturated edge node advised by
+the conduit from its own report. Full narrative:
+docs/AI_CORE_REFINEMENT-20261117.md.
+
+**Addendum (2026-11-17, evening):** the conduit surface moved into
+the desktop client itself — `source/app/conduit_pages.py` renders
+the crawl as the client's landing (simple view first), with Joy
+Gradient, Nodes, Dwell, Roam Watch (with clickable service doors)
+and Help & Support tabs. The installer merges with owner-tuned
+systems instead of overwriting them (see
+docs/INSTALL-REFINEMENT.md), existing models are advised on via a
+first-launch popup — never pulled over — and the landing carries
+plain-language switches for the script behaviors. The
+docs/conduit-app prototype remains as the design study it was.
+
+## Install (one command)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zedwiater/ai-core-workspace/geometric-nesting/get.sh | bash
+```
+
+The installer is the base function, narrated: it measures the
+hardware aptitude, pairs it with a known model, installs and
+layers that model, merges with (never overwrites) a tuned system
+already in place, and deploys the app — which opens on the crawl,
+rendered as its landing page. Supported surface: Linux with
+systemd and GTK 4 / libadwaita, from a small laptop (where the
+pairing honestly steps down and the script floor leads) to a GPU
+workstation. The crawl contract (expectations + pairing, as JSON)
+is written for AI readers as much as human ones: any agent can
+read what a node promises before asking it for work.

@@ -1,0 +1,361 @@
+{
+  "census_findings": [
+    {
+      "id": "gap-client-memory-list-keys",
+      "kind": "gap",
+      "subject": "client-memory-list_keys",
+      "surfaces": [
+        "client",
+        "memory"
+      ],
+      "evidence": "client advertises TOOL:memory:list_keys; the memory service implements ['delete', 'get', 'health', 'list', 'ping', 'set'] \u2014 the alias table maps list_keys \u2192 list",
+      "class": "safe",
+      "detail": "rewrite client to advertise TOOL:memory:list"
+    },
+    {
+      "id": "gap-client-memory-recall",
+      "kind": "gap",
+      "subject": "client-memory-recall",
+      "surfaces": [
+        "client",
+        "memory"
+      ],
+      "evidence": "client advertises TOOL:memory:recall; the memory service implements ['delete', 'get', 'health', 'list', 'ping', 'set'] \u2014 the alias table maps recall \u2192 get",
+      "class": "safe",
+      "detail": "rewrite client to advertise TOOL:memory:get"
+    },
+    {
+      "id": "gap-client-memory-store",
+      "kind": "gap",
+      "subject": "client-memory-store",
+      "surfaces": [
+        "client",
+        "memory"
+      ],
+      "evidence": "client advertises TOOL:memory:store; the memory service implements ['delete', 'get', 'health', 'list', 'ping', 'set'] \u2014 the alias table maps store \u2192 set",
+      "class": "safe",
+      "detail": "rewrite client to advertise TOOL:memory:set"
+    },
+    {
+      "id": "gap-client-vision-capture",
+      "kind": "gap",
+      "subject": "client-vision-capture",
+      "surfaces": [
+        "client",
+        "vision"
+      ],
+      "evidence": "client advertises TOOL:vision:capture; the vision service implements ['grab', 'grab_all', 'health', 'list', 'ping'] \u2014 the alias table maps capture \u2192 grab",
+      "class": "safe",
+      "detail": "rewrite client to advertise TOOL:vision:grab"
+    },
+    {
+      "id": "gap-client-vision-list-cameras",
+      "kind": "gap",
+      "subject": "client-vision-list_cameras",
+      "surfaces": [
+        "client",
+        "vision"
+      ],
+      "evidence": "client advertises TOOL:vision:list_cameras; the vision service implements ['grab', 'grab_all', 'health', 'list', 'ping'] \u2014 the alias table maps list_cameras \u2192 list",
+      "class": "safe",
+      "detail": "rewrite client to advertise TOOL:vision:list"
+    },
+    {
+      "id": "gap-readme-memory-list-keys",
+      "kind": "gap",
+      "subject": "README-memory-list_keys",
+      "surfaces": [
+        "README",
+        "memory"
+      ],
+      "evidence": "README advertises TOOL:memory:list_keys; the memory service implements ['delete', 'get', 'health', 'list', 'ping', 'set'] \u2014 the alias table maps list_keys \u2192 list",
+      "class": "safe",
+      "detail": "rewrite README to advertise TOOL:memory:list"
+    },
+    {
+      "id": "gap-readme-memory-recall",
+      "kind": "gap",
+      "subject": "README-memory-recall",
+      "surfaces": [
+        "README",
+        "memory"
+      ],
+      "evidence": "README advertises TOOL:memory:recall; the memory service implements ['delete', 'get', 'health', 'list', 'ping', 'set'] \u2014 the alias table maps recall \u2192 get",
+      "class": "safe",
+      "detail": "rewrite README to advertise TOOL:memory:get"
+    },
+    {
+      "id": "gap-readme-memory-store",
+      "kind": "gap",
+      "subject": "README-memory-store",
+      "surfaces": [
+        "README",
+        "memory"
+      ],
+      "evidence": "README advertises TOOL:memory:store; the memory service implements ['delete', 'get', 'health', 'list', 'ping', 'set'] \u2014 the alias table maps store \u2192 set",
+      "class": "safe",
+      "detail": "rewrite README to advertise TOOL:memory:set"
+    },
+    {
+      "id": "gap-readme-vision-capture",
+      "kind": "gap",
+      "subject": "README-vision-capture",
+      "surfaces": [
+        "README",
+        "vision"
+      ],
+      "evidence": "README advertises TOOL:vision:capture; the vision service implements ['grab', 'grab_all', 'health', 'list', 'ping'] \u2014 the alias table maps capture \u2192 grab",
+      "class": "safe",
+      "detail": "rewrite README to advertise TOOL:vision:grab"
+    },
+    {
+      "id": "gap-readme-vision-list-cameras",
+      "kind": "gap",
+      "subject": "README-vision-list_cameras",
+      "surfaces": [
+        "README",
+        "vision"
+      ],
+      "evidence": "README advertises TOOL:vision:list_cameras; the vision service implements ['grab', 'grab_all', 'health', 'list', 'ping'] \u2014 the alias table maps list_cameras \u2192 list",
+      "class": "safe",
+      "detail": "rewrite README to advertise TOOL:vision:list"
+    },
+    {
+      "id": "gloss-coding-eval-response-result",
+      "kind": "gloss",
+      "subject": "coding-eval-response-result",
+      "surfaces": [
+        "coding",
+        "client-formatter"
+      ],
+      "evidence": "the client's formatter expects response key 'result' for coding eval; the service source never returns it",
+      "class": "proposal",
+      "detail": "changing a response shape is behavior; the owner decides which side moves"
+    },
+    {
+      "id": "gloss-config-theme-unread",
+      "kind": "gloss",
+      "subject": "config-theme-unread",
+      "surfaces": [
+        "config",
+        "client"
+      ],
+      "evidence": "config.json offers 'theme'; no app/core source ever reads it \u2014 the value is decoration until wired",
+      "class": "proposal",
+      "detail": "the wiring is a pure read, but it changes runtime behavior \u2014 red pen"
+    },
+    {
+      "id": "gloss-config-sandbox-unread",
+      "kind": "gloss",
+      "subject": "config-sandbox-unread",
+      "surfaces": [
+        "config",
+        "client"
+      ],
+      "evidence": "config.json offers 'sandbox'; no app/core source ever reads it \u2014 the value is decoration until wired",
+      "class": "proposal",
+      "detail": "the wiring is a pure read, but it changes runtime behavior \u2014 red pen"
+    },
+    {
+      "id": "gloss-config-backup-unread",
+      "kind": "gloss",
+      "subject": "config-backup-unread",
+      "surfaces": [
+        "config",
+        "client"
+      ],
+      "evidence": "config.json offers 'backup'; no app/core source ever reads it \u2014 the value is decoration until wired",
+      "class": "proposal",
+      "detail": "the wiring is a pure read, but it changes runtime behavior \u2014 red pen"
+    },
+    {
+      "id": "gloss-config-mcp-ports-unread",
+      "kind": "gloss",
+      "subject": "config-mcp_ports-unread",
+      "surfaces": [
+        "config",
+        "client"
+      ],
+      "evidence": "config.json offers 'mcp_ports'; no app/core source ever reads it \u2014 the value is decoration until wired",
+      "class": "proposal",
+      "detail": "the wiring is a pure read, but it changes runtime behavior \u2014 red pen"
+    },
+    {
+      "id": "gloss-web-legacy-health",
+      "kind": "gloss",
+      "subject": "web-legacy-health",
+      "surfaces": [
+        "web",
+        "ring-convention"
+      ],
+      "evidence": "web's health predates the ring convention (it probes internet reachability); every other service's health is the transductive self-report",
+      "class": "proposal",
+      "detail": "renaming web's health is the known legacy class \u2014 owner's call, documented either way"
+    }
+  ],
+  "fills_applied": [
+    {
+      "finding": "gap-client-memory-recall",
+      "action": "align-advertisement",
+      "file": "source/app/ai-client.py",
+      "backup": "selfmaint/backups/ai-client.py.bak-20261114-014815",
+      "change": "TOOL:memory:recall: \u2192 TOOL:memory:get:",
+      "ts": "20261114-014815"
+    },
+    {
+      "finding": "gap-client-memory-store",
+      "action": "align-advertisement",
+      "file": "source/app/ai-client.py",
+      "backup": "selfmaint/backups/ai-client.py.bak-20261114-014815",
+      "change": "TOOL:memory:store: \u2192 TOOL:memory:set:",
+      "ts": "20261114-014815"
+    },
+    {
+      "finding": "gap-client-vision-capture",
+      "action": "align-advertisement",
+      "file": "source/app/ai-client.py",
+      "backup": "selfmaint/backups/ai-client.py.bak-20261114-014815",
+      "change": "TOOL:vision:capture: \u2192 TOOL:vision:grab:",
+      "ts": "20261114-014815"
+    },
+    {
+      "finding": "gap-readme-memory-recall",
+      "action": "align-advertisement",
+      "file": "README.md",
+      "backup": "selfmaint/backups/README.md.bak-20261114-014815",
+      "change": "TOOL:memory:recall: \u2192 TOOL:memory:get:",
+      "ts": "20261114-014815"
+    },
+    {
+      "finding": "gap-readme-memory-store",
+      "action": "align-advertisement",
+      "file": "README.md",
+      "backup": "selfmaint/backups/README.md.bak-20261114-014815",
+      "change": "TOOL:memory:store: \u2192 TOOL:memory:set:",
+      "ts": "20261114-014815"
+    },
+    {
+      "finding": "gap-readme-vision-capture",
+      "action": "align-advertisement",
+      "file": "README.md",
+      "backup": "selfmaint/backups/README.md.bak-20261114-014815",
+      "change": "TOOL:vision:capture: \u2192 TOOL:vision:grab:",
+      "ts": "20261114-014815"
+    },
+    {
+      "finding": "gap-client-memory-list-keys",
+      "action": "align-advertisement",
+      "file": "source/app/ai-client.py",
+      "backup": "selfmaint/backups/ai-client.py.bak-20261114-014837",
+      "change": "TOOL:memory:list_keys: \u2192 TOOL:memory:list:",
+      "ts": "20261114-014837"
+    },
+    {
+      "finding": "gap-client-vision-list-cameras",
+      "action": "align-advertisement",
+      "file": "source/app/ai-client.py",
+      "backup": "selfmaint/backups/ai-client.py.bak-20261114-014837",
+      "change": "TOOL:vision:list_cameras: \u2192 TOOL:vision:list:",
+      "ts": "20261114-014837"
+    },
+    {
+      "finding": "gap-readme-memory-list-keys",
+      "action": "align-advertisement",
+      "file": "README.md",
+      "backup": "selfmaint/backups/README.md.bak-20261114-014837",
+      "change": "TOOL:memory:list_keys: \u2192 TOOL:memory:list:",
+      "ts": "20261114-014837"
+    },
+    {
+      "finding": "gap-readme-vision-list-cameras",
+      "action": "align-advertisement",
+      "file": "README.md",
+      "backup": "selfmaint/backups/README.md.bak-20261114-014837",
+      "change": "TOOL:vision:list_cameras: \u2192 TOOL:vision:list:",
+      "ts": "20261114-014837"
+    }
+  ],
+  "proposals_waiting": [
+    "gloss-coding-eval-response-result.md",
+    "gloss-config-backup-unread.md",
+    "gloss-config-mcp-ports-unread.md",
+    "gloss-config-sandbox-unread.md",
+    "gloss-config-theme-unread.md",
+    "gloss-web-legacy-health.md"
+  ],
+  "census_after_fills": [
+    {
+      "id": "gloss-coding-eval-response-result",
+      "kind": "gloss",
+      "subject": "coding-eval-response-result",
+      "surfaces": [
+        "coding",
+        "client-formatter"
+      ],
+      "evidence": "the client's formatter expects response key 'result' for coding eval; the service source never returns it",
+      "class": "proposal",
+      "detail": "changing a response shape is behavior; the owner decides which side moves"
+    },
+    {
+      "id": "gloss-config-theme-unread",
+      "kind": "gloss",
+      "subject": "config-theme-unread",
+      "surfaces": [
+        "config",
+        "client"
+      ],
+      "evidence": "config.json offers 'theme'; no app/core source ever reads it \u2014 the value is decoration until wired",
+      "class": "proposal",
+      "detail": "the wiring is a pure read, but it changes runtime behavior \u2014 red pen"
+    },
+    {
+      "id": "gloss-config-sandbox-unread",
+      "kind": "gloss",
+      "subject": "config-sandbox-unread",
+      "surfaces": [
+        "config",
+        "client"
+      ],
+      "evidence": "config.json offers 'sandbox'; no app/core source ever reads it \u2014 the value is decoration until wired",
+      "class": "proposal",
+      "detail": "the wiring is a pure read, but it changes runtime behavior \u2014 red pen"
+    },
+    {
+      "id": "gloss-config-backup-unread",
+      "kind": "gloss",
+      "subject": "config-backup-unread",
+      "surfaces": [
+        "config",
+        "client"
+      ],
+      "evidence": "config.json offers 'backup'; no app/core source ever reads it \u2014 the value is decoration until wired",
+      "class": "proposal",
+      "detail": "the wiring is a pure read, but it changes runtime behavior \u2014 red pen"
+    },
+    {
+      "id": "gloss-config-mcp-ports-unread",
+      "kind": "gloss",
+      "subject": "config-mcp_ports-unread",
+      "surfaces": [
+        "config",
+        "client"
+      ],
+      "evidence": "config.json offers 'mcp_ports'; no app/core source ever reads it \u2014 the value is decoration until wired",
+      "class": "proposal",
+      "detail": "the wiring is a pure read, but it changes runtime behavior \u2014 red pen"
+    },
+    {
+      "id": "gloss-web-legacy-health",
+      "kind": "gloss",
+      "subject": "web-legacy-health",
+      "surfaces": [
+        "web",
+        "ring-convention"
+      ],
+      "evidence": "web's health predates the ring convention (it probes internet reachability); every other service's health is the transductive self-report",
+      "class": "proposal",
+      "detail": "renaming web's health is the known legacy class \u2014 owner's call, documented either way"
+    }
+  ],
+  "note": "Two beats on the build tree (wake + dwell): the first beat exposed a slug bug that skipped the underscore actions; fixed in core/selfmaint.py (fills parse the finding subject, not the id) and the second beat completed the alignment. No hardware profile: this census grades the tree; the limits check grades a box at runtime."
+}
