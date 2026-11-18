@@ -48,6 +48,15 @@ class TestGreeting(unittest.TestCase):
         self.assertIn("2 model task(s)", joined)
         self.assertIn("Conversation: resident", joined)
 
+    def test_greeting_survives_vendor_only_gpu_dicts(self):
+        # The real AMD shape census emitted before it learned to
+        # name its GPUs — this exact shape killed the installer
+        # narration and would have killed the landing (2026-11-17).
+        crawl = fake_crawl()
+        crawl["census"]["gpus"] = [{"vendor": "AMD", "vram_gb": 7}]
+        joined = "\n".join(cp.greeting_lines(crawl))
+        self.assertIn("AMD GPU", joined)
+
     def test_tables_render(self):
         self.assertIn("Expectation table", cp.expectation_table_text(fake_crawl()))
         self.assertIn("ollama-door", cp.pipes_table_text(fake_crawl()))
@@ -120,6 +129,24 @@ class TestServiceLinks(unittest.TestCase):
 
     def test_no_watch_no_links(self):
         self.assertEqual(cp.service_links(None), [])
+
+
+class TestScriptOptions(unittest.TestCase):
+    def test_defaults_and_roundtrip(self):
+        with tempfile.TemporaryDirectory() as td:
+            cp.STATE_DIR = td
+            cp.CONDUIT_JSON = os.path.join(td, "conduit.json")
+            self.assertTrue(cp.load_options()["model_advice_popup"])
+            cp.save_option("model_advice_popup", False)
+            self.assertFalse(cp.load_options()["model_advice_popup"])
+            self.assertTrue(cp.load_options()["service_links"])
+
+    def test_watch_text_muted(self):
+        watch = {"node": "n", "ts": "t", "suggestions": [
+            {"service": "X", "kind": "k", "status": "s", "role": "r",
+             "feeds": "f", "linking_options": []}]}
+        self.assertIn("muted", cp.watch_text(watch, "p",
+                                             suggestions_on=False))
 
 
 class TestFaq(unittest.TestCase):

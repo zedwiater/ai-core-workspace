@@ -205,3 +205,14 @@ First united system: 6 model seats across 3 nodes; vision and image
 generation named as single points; the saturated edge node advised by
 the conduit from its own report. Full narrative:
 docs/AI_CORE_REFINEMENT-20261117.md.
+
+**Addendum (2026-11-17, evening):** the conduit surface moved into
+the desktop client itself — `source/app/conduit_pages.py` renders
+the crawl as the client's landing (simple view first), with Joy
+Gradient, Nodes, Dwell, Roam Watch (with clickable service doors)
+and Help & Support tabs. The installer merges with owner-tuned
+systems instead of overwriting them (see
+docs/INSTALL-REFINEMENT.md), existing models are advised on via a
+first-launch popup — never pulled over — and the landing carries
+plain-language switches for the script behaviors. The
+docs/conduit-app prototype remains as the design study it was.

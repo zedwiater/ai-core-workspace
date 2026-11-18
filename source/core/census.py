@@ -86,9 +86,16 @@ def gpu_probe():
                 vram = int(open(os.path.join(card, "device", f)).read()) // (1024 ** 3)
             except Exception:
                 pass
-        gpus.append({"vendor": {"0x1002": "AMD", "0x10de": "NVIDIA",
-                                "0x8086": "Intel"}.get(vendor, vendor),
-                     "vram_gb": vram})
+        vendor_name = {"0x1002": "AMD", "0x10de": "NVIDIA",
+                       "0x8086": "Intel"}.get(vendor, vendor)
+        gpus.append({"vendor": vendor_name,
+                     "vram_gb": vram,
+                     # Consumers greet by name; a probe that emits no
+                     # name crashed the installer narration AND the
+                     # landing greeting on real AMD hardware
+                     # (2026-11-17). Always emit one.
+                     "name": f"{vendor_name} GPU"
+                             + (f" ({vram} GB)" if vram else "")})
     if shutil.which("nvidia-smi"):
         try:
             out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total",

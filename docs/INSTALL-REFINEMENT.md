@@ -90,3 +90,7 @@ restarted, nothing pulled); otherwise the app writes only its own
 ai-core.conf drop-in. Existing models are never pulled over — the
 shelf decides the app's factory default, and the keep/upgrade advice
 is a first-launch popup (conduit_pages.model_advice).
+The landing also carries plain-language switches for the script
+behaviors (model-advice popup, clickable service doors,
+new-arrival suggestions) — each persists to
+~/.config/ai-core/conduit.json and is read by the behavior it names.

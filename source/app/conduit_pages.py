@@ -75,7 +75,7 @@ def greeting_lines(crawl):
              f"I crawled your hardware before greeting you: "
              f"{c['cpu']['effective_threads']} effective threads, "
              f"{round(c['ram']['effective_mb'] / 1024, 1)} GB of usable RAM, "
-             f"{'a GPU (' + ', '.join(g['name'] for g in c['gpus']) + ')' if c['gpus'] else 'no GPU — models take CPU seats here'}, "
+             f"{'a GPU (' + ', '.join(g.get('name') or (g.get('vendor', 'GPU') + ' GPU') for g in c['gpus']) + ')' if c['gpus'] else 'no GPU — models take CPU seats here'}, "
              f"{c['disk_free_gb']} GB of free disk.",
              f"Working budget: {budget['max_parallel_model_tasks']} model task(s) at once. "
              f"Script tasks are never seat-bound — the floor is always up."]
@@ -139,23 +139,12 @@ GRADIENTS = [
 ]
 
 def load_comfort():
-    try:
-        with open(CONDUIT_JSON) as f:
-            return json.load(f).get("comfort", "balanced")
-    except Exception:
-        return "balanced"
+    return _load_conduit_json().get("comfort", "balanced")
 
 def save_comfort(value):
-    os.makedirs(STATE_DIR, exist_ok=True)
-    data = {}
-    if os.path.exists(CONDUIT_JSON):
-        try:
-            data = json.load(open(CONDUIT_JSON))
-        except Exception:
-            data = {}
+    data = _load_conduit_json()
     data["comfort"] = value
-    with open(CONDUIT_JSON, "w") as f:
-        json.dump(data, f, indent=1)
+    _save_conduit_json(data)
     return value
 
 # ------------------------------------------------------- nodes / files
@@ -233,7 +222,7 @@ def dwell_text(social, social_path, crawl):
                    "says so, rather than performing a social that never met.")
     return "\n".join(out)
 
-def watch_text(watch, watch_path):
+def watch_text(watch, watch_path, suggestions_on=True):
     out = ["Roam Watch is the hub's active crawl: hourly, it diffs ports, "
            "devices and services against the last crawl and suggests how "
            "each new arrival should integrate — a plugged-in camera, new "
@@ -243,6 +232,11 @@ def watch_text(watch, watch_path):
     if watch:
         out.append(f"Latest watch — {watch.get('node')} at {watch.get('ts')} "
                    f"({watch_path}):")
+        if not suggestions_on:
+            out.append("• Suggestions are muted by your switch on the "
+                       "Conduit tab — the watch still ran; flip it back "
+                       "on to see what it found.")
+            return "\n".join(out)
         for s in watch.get("suggestions", []):
             out.append(f"• [{s.get('kind')}] {s.get('service')}: {s.get('status')}")
             out.append(f"    role: {s.get('role')} · feeds: {s.get('feeds')}")
@@ -393,6 +387,34 @@ def attach(notebook, on_model_choice=None):
     home_box.append(toggle)
     home_box.append(adv_sw)
 
+    # Scripts & automation — plain-language switches (Zak's ask).
+    opts_title = Gtk.Label(label="Scripts & automation — plain switches")
+    opts_title.set_xalign(0)
+    opts_title.set_margin_start(12)
+    opts_title.set_margin_top(10)
+    home_box.append(opts_title)
+    current_opts = load_options()
+    for opt in SCRIPT_OPTIONS:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        row.set_margin_start(12)
+        row.set_margin_end(12)
+        sw = Gtk.Switch()
+        sw.set_active(current_opts[opt["key"]])
+        sw.set_valign(Gtk.Align.START)
+        sw.connect("notify::active",
+                   lambda s, _p, k=opt["key"]: save_option(k, s.get_active()))
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        lab = Gtk.Label(label=opt["label"])
+        lab.set_xalign(0)
+        hlp = Gtk.Label(label=opt["help"])
+        hlp.set_xalign(0)
+        hlp.set_wrap(True)
+        texts.append(lab)
+        texts.append(hlp)
+        row.append(sw)
+        row.append(texts)
+        home_box.append(row)
+
     def pop_home(state):
         crawl = state["crawl"]
         text = "\n\n".join(greeting_lines(crawl))
@@ -462,9 +484,13 @@ def attach(notebook, on_model_choice=None):
     watch_box.append(watch_sw)
 
     def pop_watch(state):
-        watch_buf.set_text(watch_text(state["watch"], state["watch_path"]))
+        opts = load_options()
+        watch_buf.set_text(watch_text(state["watch"], state["watch_path"],
+                                      suggestions_on=opts["watch_suggestions"]))
         while (child := links_box.get_first_child()) is not None:
             links_box.remove(child)
+        if not opts["service_links"]:
+            return
         for link in service_links(state["watch"]):
             btn = Gtk.LinkButton(uri=link["url"],
                                  label=f"Open {link['service']}")
@@ -520,6 +546,7 @@ def attach(notebook, on_model_choice=None):
             for fn in populates.values():
                 GLib.idle_add(fn, state)
             if on_model_choice is not None and state.get("advice") \
+                    and load_options()["model_advice_popup"] \
                     and state["advice"]["state"] in ("keep", "upgrade", "none"):
                 GLib.idle_add(_show_model_dialog, notebook,
                               state["advice"], on_model_choice)
@@ -651,3 +678,50 @@ def service_links(watch):
                 links.append({"service": s.get("service", "service"),
                               "url": target})
     return links
+
+# ------------------------------------------- plain-language script options
+# Zak (2026-11-17): the app needs an easy tool to adjust script
+# options in plain language. These switches live on the landing page;
+# each one names what it does in a sentence, persists to conduit.json,
+# and is actually read by the behavior it describes.
+
+SCRIPT_OPTIONS = [
+    {"key": "model_advice_popup", "default": True,
+     "label": "Model advice popup",
+     "help": "When the app opens, it checks the models on this machine "
+             "and pops up its advice — keep yours, or take the better "
+             "fit. Off: the advice waits quietly on this page instead."},
+    {"key": "service_links", "default": True,
+     "label": "Clickable service doors",
+     "help": "Roam Watch shows buttons that open your services "
+             "(Frigate, the model door) in the browser. Off: names "
+             "and addresses as plain text."},
+    {"key": "watch_suggestions", "default": True,
+     "label": "New-arrival suggestions",
+     "help": "When the hourly watch spots a new device or service, "
+             "its suggestion shows in Roam Watch. Off: the watch "
+             "still runs; the page stays quiet about arrivals."},
+]
+
+def _load_conduit_json():
+    try:
+        with open(CONDUIT_JSON) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_conduit_json(data):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(CONDUIT_JSON, "w") as f:
+        json.dump(data, f, indent=1)
+
+def load_options():
+    saved = _load_conduit_json().get("options", {})
+    return {o["key"]: bool(saved.get(o["key"], o["default"]))
+            for o in SCRIPT_OPTIONS}
+
+def save_option(key, value):
+    data = _load_conduit_json()
+    data.setdefault("options", {})[key] = bool(value)
+    _save_conduit_json(data)
+    return load_options()

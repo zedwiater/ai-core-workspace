@@ -40,6 +40,11 @@ fi
 REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "$USER")}"
 REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 
+# Work from the installer's own directory: every step below uses
+# repo-relative paths, and a launch from elsewhere must not die
+# mid-deploy on a missing file.
+cd "$(dirname "$0")"
+
 # --- BACKUP EXISTING INSTALL ---
 if [[ -d "$TARGET_DIR" ]]; then
     BACKUP="$TARGET_DIR.backup.$(date +%Y%m%d_%H%M%S)"
@@ -156,7 +161,7 @@ if python3 source/core/census.py --out "$CRAWL_DIR" >/dev/null 2>&1 \
    && python3 source/core/pipes.py --out "$CRAWL_DIR" >/dev/null 2>&1; then
     mkdir -p "$TARGET_DIR/crawl" 2>/dev/null || true
     cp "$CRAWL_DIR/expectations.json" "$CRAWL_DIR/pipes.json" "$TARGET_DIR/crawl/" 2>/dev/null || true
-    python3 - "$CRAWL_DIR" "$OPTIMAL_MODEL" <<'CRAWL_EOF'
+    python3 - "$CRAWL_DIR" "$OPTIMAL_MODEL" <<'CRAWL_EOF' || echo "   (narration skipped — the crawl itself is saved under $TARGET_DIR/crawl)"
 import json, os, sys
 d, optimal = sys.argv[1], sys.argv[2]
 c = json.load(open(os.path.join(d, "expectations.json")))
@@ -164,7 +169,7 @@ p = json.load(open(os.path.join(d, "pipes.json")))
 exp = c["expectations"]; tiers = {t["tier"]: t for t in exp["tiers"]}
 print(f"   🖥️  {c['host']}: {c['cpu']['effective_threads']} effective threads, "
       f"{round(c['ram']['effective_mb']/1024, 1)} GB usable RAM, "
-      f"{('GPU: ' + ', '.join(g['name'] for g in c['gpus'])) if c['gpus'] else 'no GPU'}")
+      f"{('GPU: ' + ', '.join(g.get('name') or (g.get('vendor', 'GPU') + ' GPU') for g in c['gpus'])) if c['gpus'] else 'no GPU'}")
 print(f"   🎚️  Budget: {exp['budget']['max_parallel_model_tasks']} model task(s) at once. "
       "Script tasks are never seat-bound — the floor is always up.")
 conv = tiers.get("conversation", {})
