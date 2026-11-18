@@ -320,7 +320,8 @@ class AIClient(Adw.Application):
         # never take the client down with it.
         try:
             import conduit_pages
-            conduit_pages.attach(self.notebook)
+            conduit_pages.attach(self.notebook,
+                                 on_model_choice=self._apply_conduit_model)
         except Exception:
             pass
         self.notebook.connect("switch-page", self._on_page_switch)
@@ -2101,6 +2102,24 @@ class AIClient(Adw.Application):
         elif self.toy_source is not None:
             GLib.source_remove(self.toy_source)
             self.toy_source = None
+
+    def _apply_conduit_model(self, name):
+        """The Conduit popup's Keep choice lands here: the resident
+        model the user confirmed becomes the chat stack's top, saved
+        through the same path the Models UI uses."""
+        try:
+            self.model = name
+            chat = self.stacks.setdefault("chat", [])
+            chat[:] = [e for e in chat
+                       if not (e.get("kind") == "ollama"
+                               and e.get("model") == name)]
+            chat.insert(0, {"kind": "ollama", "model": name})
+            model_stacks.save_stacks(self.stacks)
+            if name in self.available_models:
+                self.model_dropdown.set_selected(
+                    self.available_models.index(name))
+        except Exception:
+            pass
 
     def _on_model_changed(self, dropdown, pspec):
         idx = dropdown.get_selected()

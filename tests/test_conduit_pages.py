@@ -75,6 +75,29 @@ class TestComfort(unittest.TestCase):
             self.assertEqual(cp.load_comfort(), "deep")
 
 
+class TestModelAdvice(unittest.TestCase):
+    """Zak's rule: existing models are advised on, never overwritten.
+    A tuned resident (george-14) must earn a KEEP verdict."""
+
+    def test_tuned_resident_is_kept(self):
+        a = cp.model_advice(fake_crawl(), [{"name": "george-14"}])
+        self.assertEqual(a["state"], "keep")
+        self.assertEqual(a["resident"], "george-14")
+
+    def test_small_resident_gets_upgrade_advice(self):
+        a = cp.model_advice(fake_crawl(), [{"name": "qwen2.5:3b"}])
+        self.assertEqual(a["state"], "upgrade")
+        self.assertEqual(a["fitted"], "qwen3.5:9b")
+
+    def test_empty_shelf_offers_the_fit(self):
+        a = cp.model_advice(fake_crawl(), [])
+        self.assertEqual(a["state"], "none")
+
+    def test_silent_door_says_so(self):
+        a = cp.model_advice(fake_crawl(), None)
+        self.assertEqual(a["state"], "door-silent")
+
+
 class TestFaq(unittest.TestCase):
     def test_synonym_search_finds_refusal(self):
         hits = cp.faq_filter("refused")

@@ -368,10 +368,12 @@ def collect_state():
             "social": social, "social_path": social_path,
             "watch": watch, "watch_path": watch_path}
 
-def attach(notebook):
+def attach(notebook, on_model_choice=None):
     """Build the Conduit pages into the client's notebook and start
     the crawl. Returns a dict of populate callbacks (already wired);
-    the landing page is inserted first and selected."""
+    the landing page is inserted first and selected. When
+    on_model_choice is given, the model-advice popup is shown after
+    the crawl: keep-current or pull-the-fit, the user's call."""
     import gi
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
@@ -393,7 +395,10 @@ def attach(notebook):
 
     def pop_home(state):
         crawl = state["crawl"]
-        greet_buf.set_text("\n\n".join(greeting_lines(crawl)))
+        text = "\n\n".join(greeting_lines(crawl))
+        if state.get("advice"):
+            text += "\n\n" + state["advice"]["message"]
+        greet_buf.set_text(text)
         adv_buf.set_text(expectation_table_text(crawl) + "\n\n"
                          + pipes_table_text(crawl))
     populates["home"] = pop_home
@@ -494,7 +499,120 @@ def attach(notebook):
                           "(source/core/census.py, pipes.py) can be run by "
                           "hand to see the underlying error.")
         if state is not None:
+            try:
+                state["advice"] = model_advice(state["crawl"], fetch_tags())
+            except Exception:
+                state["advice"] = None
             for fn in populates.values():
                 GLib.idle_add(fn, state)
+            if on_model_choice is not None and state.get("advice") \
+                    and state["advice"]["state"] in ("keep", "upgrade", "none"):
+                GLib.idle_add(_show_model_dialog, notebook,
+                              state["advice"], on_model_choice)
     threading.Thread(target=work, daemon=True).start()
     return populates
+
+# ---------------------------------------------------------- model advice
+# Zak's rule (2026-11-17): check if other models exist first. If they
+# do, the app ADVISES — keep the current model, or take the better
+# fit — in a popup the user decides on. Never a silent pull, never a
+# silent overwrite of a shelf someone built on purpose.
+
+import re, subprocess, urllib.request
+
+def _params_b(name):
+    m = re.search(r"(\d+(?:\.\d+)?)\s*b\b", (name or "").lower())
+    if m:
+        return float(m.group(1))
+    m = re.search(r"-(\d+(?:\.\d+)?)$", (name or "").lower())
+    return float(m.group(1)) if m else None
+
+def fitted_model(ram_mb):
+    """The installer's fit rule, mirrored so the popup and the
+    installer never give different advice on the same machine."""
+    if (ram_mb or 0) >= 16 * 1024:
+        return "qwen3.5:9b", 9.0
+    return "qwen3:8b", 8.0
+
+def fetch_tags():
+    """The door's shelf, or None if the door isn't answering."""
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/tags",
+                                    timeout=2.5) as r:
+            return json.load(r).get("models", [])
+    except Exception:
+        return None
+
+def model_advice(crawl, tags):
+    ram = crawl["census"]["ram"]["effective_mb"]
+    fitted, fitted_p = fitted_model(ram)
+    if tags is None:
+        return {"state": "door-silent", "fitted": fitted,
+                "message": "The model door (Ollama, localhost:11434) isn't "
+                           "answering, so there is no shelf to advise on. "
+                           "Start it with: sudo systemctl enable --now ollama "
+                           "— then this advice runs again on next launch."}
+    names = [m.get("name", "") for m in tags if m.get("name")]
+    if not names:
+        return {"state": "none", "fitted": fitted,
+                "message": f"No models are pulled on this machine yet. The "
+                           f"fit for your hardware is {fitted}. Pull it now, "
+                           "or later from the Models tab — nothing was pulled "
+                           "without asking."}
+    sized = sorted(names, key=lambda n: _params_b(n) or 0, reverse=True)
+    resident = sized[0]
+    resident_p = _params_b(resident) or 0
+    if resident_p >= fitted_p:
+        return {"state": "keep", "resident": resident, "fitted": fitted,
+                "message": f"You already have {resident} on this machine — "
+                           f"it meets or beats the fitted model for your "
+                           f"hardware ({fitted}). Advice: keep your current "
+                           "model. Nothing was pulled, nothing was changed."}
+    return {"state": "upgrade", "resident": resident, "fitted": fitted,
+            "message": f"Your largest resident model is {resident}; the fit "
+                       f"for your hardware is {fitted}. You can pull the "
+                       "better fit now (it downloads in the background and "
+                       "your current model keeps working), or keep what you "
+                       "have — the choice is yours, and nothing happens "
+                       "without it."}
+
+def _show_model_dialog(notebook, advice, on_choice):
+    """The popup itself. Returns False (landing text carries the
+    advice instead) if the dialog can't be shown on this Gtk."""
+    import gi
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gtk
+    state = advice["state"]
+    if state == "keep":
+        labels = [f"Keep {advice['resident']}", "Not now"]
+    elif state == "upgrade":
+        labels = [f"Pull {advice['fitted']}", f"Keep {advice['resident']}",
+                  "Not now"]
+    elif state == "none":
+        labels = [f"Pull {advice['fitted']}", "Not now"]
+    else:
+        return False
+    try:
+        dlg = Gtk.AlertDialog()
+        dlg.set_message("Your models, your call")
+        dlg.set_detail(advice["message"])
+        dlg.set_buttons(labels)
+
+        def done(d, result):
+            try:
+                idx = d.choose_finish(result)
+            except Exception:
+                return
+            label = labels[idx] if 0 <= idx < len(labels) else ""
+            if label.startswith("Keep "):
+                on_choice(advice["resident"])
+            elif label.startswith("Pull "):
+                log = os.path.join(STATE_DIR, "pull.log")
+                os.makedirs(STATE_DIR, exist_ok=True)
+                with open(log, "ab") as lf:
+                    subprocess.Popen(["ollama", "pull", advice["fitted"]],
+                                     stdout=lf, stderr=lf)
+        dlg.choose(notebook.get_root(), None, done)
+        return True
+    except Exception:
+        return False
