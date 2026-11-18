@@ -20,7 +20,7 @@ Design rules carried from the refinement:
 - Nothing here starts services, pulls models, or changes the system.
   The pages inform and offer; acting stays with the user.
 """
-import glob, json, os, platform, shutil, sys, time
+import glob, json, os, platform, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from core import census as census_mod
@@ -230,12 +230,23 @@ def nodes_text(crawl, reports):
                    "and the conduit will advise it in the hourly social.")
     return "\n".join(out)
 
-def dwell_text(social, social_path, crawl):
+def dwell_text(social, social_path, crawl, reach_enabled=None):
     out = ["Dwell is how this system learns your rhythms: a resident observer "
            "notices, a gatekeeper brain vetoes noise, and what survives becomes "
            "the journal — receipts first, narrative second. The nodes hold an "
            "hourly five-minute social: system, connections, stability, "
            "progress.", ""]
+    enabled = reach_enabled or {}
+    in_set = [r for r in reach_rows(crawl) if enabled.get(r["id"])]
+    out.append("In the hub's dwell/roam set — your switches on the "
+               "Nodes page:")
+    if in_set:
+        for r in in_set:
+            out.append(f"• {r['label']} — {r['suggests']}")
+    else:
+        out.append("  nothing yet — flip a switch on the Nodes page "
+                   "to pull a device or pipe into the hub.")
+    out.append("")
     if social:
         out.append(f"Latest node social ({social_path}):")
         out.append(social)
@@ -615,10 +626,114 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
             btn = Gtk.LinkButton(uri=link["url"],
                                  label=f"Open {link['service']}")
             links_box.append(btn)
-    populates["nodes"] = lambda s: nodes_buf.set_text(
-        nodes_text(s["crawl"], s["reports"]))
+    # The Nodes page is also the reach map: below the node text,
+    # one switch per organ/pipe the crawl found. A switch is the
+    # user's confirmation; on enable it runs the item's
+    # connection script when one exists, and the hub's dwell set
+    # (the Dwell page) reflects exactly the switched-on rows.
+    nodes_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                        spacing=6)
+    nodes_box.append(nodes_sw)
+    reach_title = Gtk.Label(
+        label="This node's reach — pull a device or pipe into "
+              "the hub (dwell + roam)")
+    reach_title.set_xalign(0)
+    reach_title.set_margin_start(12)
+    reach_title.set_margin_top(10)
+    nodes_box.append(reach_title)
+    reach_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                        spacing=4)
+    nodes_box.append(reach_box)
+    reach_status = Gtk.Label(label="")
+    reach_status.set_xalign(0)
+    reach_status.set_wrap(True)
+    reach_status.set_margin_start(12)
+    nodes_box.append(reach_status)
+    state_cell = {}
+
+    def on_reach_toggle(sw, _p, row):
+        on = sw.get_active()
+        save_reach_enabled(row["id"], on)
+        if not on:
+            reach_status.set_text(
+                f"{row['label']} — out of the hub's dwell set.")
+        else:
+            script = connect_script_for(row["id"])
+            if script is None:
+                reach_status.set_text(
+                    f"✓ {row['label']} is in the hub's dwell/roam "
+                    f"set — the hub reads this switch. (No "
+                    f"connection script for this item yet.)")
+            else:
+                reach_status.set_text(
+                    f"Running the connection script for "
+                    f"{row['label']}…")
+
+                def run_script():
+                    try:
+                        r = subprocess.run(
+                            [script, row["id"]], capture_output=True,
+                            text=True, timeout=60)
+                        tail = (r.stdout or r.stderr or "").strip() \
+                            .splitlines()
+                        msg = (f"✓ {row['label']}: connection "
+                               f"script ran"
+                               + (f" — {tail[-1]}" if tail else ""))
+                    except Exception as e:
+                        msg = (f"{row['label']}: the connection "
+                               f"script failed ({e}); the switch "
+                               f"stays on and the hub still reads it.")
+                    GLib.idle_add(reach_status.set_text, msg)
+                threading.Thread(target=run_script,
+                                 daemon=True).start()
+        state = state_cell.get("state")
+        if state is not None:
+            populates["dwell"](state)
+
+    def pop_nodes(state):
+        state_cell["state"] = state
+        nodes_buf.set_text(nodes_text(state["crawl"],
+                                      state["reports"]))
+        while (child := reach_box.get_first_child()) is not None:
+            reach_box.remove(child)
+        enabled = load_reach_enabled()
+        rows = reach_rows(state["crawl"])
+        if not rows:
+            lbl = Gtk.Label(label="The crawl found no organs or "
+                                  "pipes to offer on this node.")
+            lbl.set_xalign(0)
+            lbl.set_margin_start(12)
+            reach_box.append(lbl)
+        for row in rows:
+            rbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                           spacing=10)
+            rbox.set_margin_start(12)
+            rbox.set_margin_end(12)
+            sw = Gtk.Switch()
+            sw.set_active(bool(enabled.get(row["id"])))
+            sw.set_sensitive(row["found"])
+            sw.set_valign(Gtk.Align.START)
+            sw.connect("notify::active", on_reach_toggle, row)
+            texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                            spacing=2)
+            lab = Gtk.Label(label=row["label"]
+                            + ("" if row["found"]
+                               else " — not found"))
+            lab.set_xalign(0)
+            det = Gtk.Label(label=f"{row['detail']} — suggests: "
+                                  f"{row['suggests']}")
+            det.set_xalign(0)
+            det.set_wrap(True)
+            texts.append(lab)
+            texts.append(det)
+            rbox.append(sw)
+            rbox.append(texts)
+            reach_box.append(rbox)
+
+    populates["nodes"] = pop_nodes
     populates["dwell"] = lambda s: dwell_buf.set_text(
-        dwell_text(s["social"], s["social_path"], s["crawl"]))
+        dwell_text(s["social"], s["social_path"], s["crawl"],
+                   reach_enabled=load_reach_enabled()))
     populates["watch"] = pop_watch
 
     # --- Help & Support ---
@@ -638,7 +753,7 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
     populates["help"] = lambda s: None
 
     pages = [("Conduit", home_box), ("Joy Gradient", joy_sw),
-             ("Nodes", nodes_sw), ("Dwell", dwell_sw),
+             ("Nodes", nodes_box), ("Dwell", dwell_sw),
              ("Roam Watch", watch_box), ("Help & Support", help_box)]
     for i, (title, widget) in enumerate(pages):
         if i == 0:
@@ -849,6 +964,76 @@ def load_options():
     saved = _load_conduit_json().get("options", {})
     return {o["key"]: bool(saved.get(o["key"], o["default"]))
             for o in SCRIPT_OPTIONS}
+
+
+# ------------------------------------------------------------ reach map
+
+def reach_rows(crawl):
+    """The crawl reach map for THIS node (Zak, 2026-11-18):
+    every organ and pipe the crawl found — or looked for — with
+    the comparable use it suggests. The Nodes page renders these
+    with switches; a switch is the user's confirmation, and the
+    hub's dwell/roam set is exactly the switched-on rows."""
+    c = crawl["census"]
+    rows = []
+    for cam in c.get("cameras", []):
+        rows.append({"id": f"camera:{cam['device']}",
+                     "kind": "camera", "found": True,
+                     "label": f"Camera — {cam['name']}",
+                     "detail": cam["device"],
+                     "suggests": "a dwell eye and a roam source "
+                                 "for the hub"})
+    for a in c.get("audio", []):
+        if a.get("capture"):
+            rows.append({"id": f"mic:{a['card']}", "kind": "audio",
+                         "found": True,
+                         "label": f"Microphone — {a['name']}",
+                         "detail": a["card"],
+                         "suggests": "the parallel ear — attention "
+                                     "and emergency never wait for "
+                                     "the patrol"})
+        if a.get("playback"):
+            rows.append({"id": f"speaker:{a['card']}",
+                         "kind": "audio", "found": True,
+                         "label": f"Speaker — {a['name']}",
+                         "detail": a["card"],
+                         "suggests": "a voice for the hub to "
+                                     "speak through"})
+    for item in c.get("reach", []):
+        rows.append({"id": f"reach:{item['id']}",
+                     "kind": item["kind"],
+                     "found": item["found"],
+                     "label": item["id"],
+                     "detail": item["detail"],
+                     "suggests": item["suggests"]})
+    return rows
+
+
+def load_reach_enabled():
+    return _load_conduit_json().get("reach_enabled", {})
+
+
+def save_reach_enabled(item_id, on):
+    data = _load_conduit_json()
+    enabled = data.setdefault("reach_enabled", {})
+    enabled[item_id] = bool(on)
+    _save_conduit_json(data)
+    return enabled
+
+
+def connect_script_for(item_id):
+    """The connection script for a reach item, when one exists:
+    connect-<item>.sh under the user's ai-core scripts dir or
+    the installed scripts dir. The switch runs it on enable;
+    where none exists, the switch itself is the connection —
+    the hub reads conduit.json — and the page says so."""
+    safe = item_id.replace(":", "-").replace("/", "-")
+    for d in (os.path.join(STATE_DIR, "scripts"),
+              "/opt/ai-core/scripts"):
+        p = os.path.join(d, f"connect-{safe}.sh")
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
 
 def save_option(key, value):
     data = _load_conduit_json()
