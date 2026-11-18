@@ -388,6 +388,13 @@ class AIClient(Adw.Application):
                      and self.floor_monitor.stop())
         self.win.connect("close-request", self._on_close)
 
+    def do_activate(self):
+        # Present the one window; never build another. (The window
+        # is constructed in __init__; re-activation — from a second
+        # launch, a session restore, an icon click — just raises it.)
+        if getattr(self, "win", None) is not None:
+            self.win.present()
+
     def _on_close(self, *_args):
         if self.toy_source is not None:
             GLib.source_remove(self.toy_source)
@@ -2347,4 +2354,18 @@ class AIClient(Adw.Application):
                 ind.set_markup("<span foreground='#e01b24'>●</span>")
 
 if __name__ == "__main__":
+    # One instance, whoever asks. Autostart, session restore and a
+    # manual launch stacked copies of this app on one laptop until
+    # the machine choked (2026-11-17) — Gtk's own uniqueness did
+    # not save it, so a file lock is the whole mechanism now: a
+    # second launch sees the lock held and leaves, whoever sent it.
+    import fcntl
+    _lock_path = os.path.expanduser("~/.cache/ai-core/client.lock")
+    os.makedirs(os.path.dirname(_lock_path), exist_ok=True)
+    _lock_fd = open(_lock_path, "w")
+    try:
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("AI Core is already running — not starting a second copy.")
+        sys.exit(0)
     sys.exit(AIClient().run(sys.argv))
