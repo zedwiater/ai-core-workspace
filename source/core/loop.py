@@ -113,20 +113,31 @@ def execute_tool_payload(tool_string, call=None):
     return "Unknown tool command."
 
 
-def run_tool_loop(history, chat, emit, execute=None, max_loops=5):
+def run_tool_loop(history, chat, emit, execute=None, max_loops=5,
+                  progress=None):
     """Run the Intercept & Compute cycle against a live history list.
 
     history is mutated in place (tool exchanges and the final answer
     are appended), exactly as the client's inline loop mutated it.
+
+    progress, when given, is called with a short beat name at each
+    wait: "thinking" before every model call (the long silence on
+    a CPU seat — Zak's play session, 2026-11-17: a sent chat gave
+    no sign of life until it errored) and "tool" before every
+    tool execution. The loop stays dumb; the surface words it.
     """
     if execute is None:
         execute = execute_tool_payload
     loop_count = 0
     while loop_count < max_loops:
         try:
+            if progress is not None:
+                progress("thinking")
             ai_output = chat(history)
             if is_tool_call(ai_output):
                 emit(f"⚙️ Tool:\n{ai_output}", "system")
+                if progress is not None:
+                    progress("tool")
                 tool_result = execute(ai_output)
 
                 history.append({"role": "assistant", "content": ai_output})

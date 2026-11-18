@@ -2247,12 +2247,49 @@ class AIClient(Adw.Application):
         text = self.entry.get_text().strip()
         if not text and not self.attached_file:
             return
-        
+
         if text:
             self.append_bubble(text, "user")
         self.entry.set_text("")
-        
+        # A sign of life the moment the chat is sent: the thinking
+        # bubble appears now and narrates the wait (Zak's play
+        # session: silence until an error is not a chat state).
+        self._show_thinking("💭 Thinking — the model is working…")
+
         threading.Thread(target=self._compute_cycle, args=(text,), daemon=True).start()
+
+    # --- the thinking bubble: one status row, updated in place ---
+    def _show_thinking(self, text):
+        self._clear_thinking()
+        label = Gtk.Label(label=text)
+        label.set_wrap(True)
+        label.set_xalign(0.0)
+        label.add_css_class("bubble-system")
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        row.append(label)
+        self.chat_list.append(row)
+        self._thinking_row = row
+        self._thinking_label = label
+        GLib.idle_add(self._scroll_to_bottom)
+
+    def _set_thinking(self, text):
+        if getattr(self, "_thinking_label", None) is not None:
+            self._thinking_label.set_text(text)
+        return False
+
+    def _clear_thinking(self):
+        row = getattr(self, "_thinking_row", None)
+        if row is not None:
+            self.chat_list.remove(row)
+        self._thinking_row = None
+        self._thinking_label = None
+        return False
+
+    def _emit_progress(self, beat):
+        words = {"thinking": "💭 Thinking — the model is working…",
+                 "tool": "🔧 Running a tool…"}
+        if beat in words:
+            GLib.idle_add(self._set_thinking, words[beat])
 
     def _compute_cycle(self, prompt_text):
         # If an image was attached, route through LLaVA
@@ -2266,7 +2303,8 @@ class AIClient(Adw.Application):
 
         run_tool_loop(self.history, self._ollama_chat, self._emit_bubble,
                       execute=self._execute_tool_payload,
-                      max_loops=self.max_loops)
+                      max_loops=self.max_loops,
+                      progress=self._emit_progress)
 
     def _compute_vision_response(self, prompt_text, file_path):
         """Route an attached image through LLaVA vision model."""
@@ -2354,6 +2392,9 @@ class AIClient(Adw.Application):
         return False
 
     def _emit_bubble(self, text, sender):
+        if sender == "ai":
+            # An answer — or an honest error — ends the wait.
+            GLib.idle_add(self._clear_thinking)
         GLib.idle_add(self.append_bubble, text, sender)
 
     def _execute_tool_payload(self, tool_string):
