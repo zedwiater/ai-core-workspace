@@ -26,6 +26,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "..")))
 from core import dwell as dwell_mod
+from core import governor as governor_mod
 from core import notify as notify_mod
 from core.protocol import call_service
 from core.ring_service import serve
@@ -39,9 +40,12 @@ _state = {"levels": [], "prev_sizes": {}, "rotate": 0,
           "last_attention": None, "cycles": 0}
 
 
-def _grab(cam, reason, level_db):
-    g = call_service("vision", "grab", {"camera": cam},
-                     timeout=45)
+def _grab(cam, reason, level_db, clip=False):
+    action = "clip" if clip else "grab"
+    params = {"camera": cam}
+    if clip:
+        params["seconds"] = 6
+    g = call_service("vision", action, params, timeout=60)
     if g.get("status") != "ok" or not g.get("path"):
         fails = _state.setdefault("fails", {})
         fails[cam] = fails.get(cam, 0) + 1
@@ -54,7 +58,8 @@ def _grab(cam, reason, level_db):
     dest_dir = os.path.join(dwell_mod.FRAMES_DIR,
                             cam.replace("/", "_"))
     os.makedirs(dest_dir, exist_ok=True)
-    dest = os.path.join(dest_dir, stamp + ".jpg")
+    ext = os.path.splitext(g["path"])[1] or ".jpg"
+    dest = os.path.join(dest_dir, stamp + ext)
     try:
         shutil.copyfile(g["path"], dest)
     except OSError:
@@ -68,9 +73,10 @@ def _grab(cam, reason, level_db):
         "attention" if reason == "attention" or changed
         else reason, level_db)
     dwell_mod.log_timeline(
-        {"kind": "frame", "cam": cam, "path": dest,
-         "size": size, "changed": changed, "reason": reason,
-         "level_db": level_db})
+        {"kind": "clip" if clip else "frame", "cam": cam,
+         "path": dest, "size": size, "changed": changed,
+         "reason": reason, "level_db": level_db,
+         "audio": g.get("audio")})
     return entry
 
 
@@ -82,6 +88,17 @@ def _alert(text):
     return notify_mod.send(text)
 
 
+def _ram_gb():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) / 1e6
+    except OSError:
+        pass
+    return 8.0
+
+
 def run_cycle():
     """One patrol. Never raises — a sick cycle is a logged
     cycle, not a dead service."""
@@ -91,6 +108,26 @@ def run_cycle():
         cfg = dwell_mod.load_loop_config()
         if not cfg["enabled"]:
             return {"status": "off"}
+        # The governor rules before anything is spent: an
+        # over-cap store prunes first; a busy or squeezed
+        # machine skips the cycle, and the skip is logged.
+        verdict = governor_mod.assess(dwell_mod.DWELL_DIR,
+                                      _ram_gb())
+        if not verdict["ok"] \
+                and verdict["reason"].startswith("storage cap"):
+            governor_mod.prune_to_cap(
+                dwell_mod.DWELL_DIR,
+                verdict["budget"]["storage_cap_mb"])
+            verdict = governor_mod.assess(dwell_mod.DWELL_DIR,
+                                          _ram_gb())
+        if not verdict["ok"]:
+            dwell_mod.log_timeline(
+                {"kind": "throttled", "why": verdict["reason"]})
+            dwell_mod.save_state(
+                {**dwell_mod.load_state(),
+                 "paused_reason": verdict["reason"]})
+            return {"status": "throttled",
+                    "why": verdict["reason"]}
         lvl = call_service("sound", "level", {"duration": 2},
                            timeout=45)
         level_db = lvl.get("level_db") \
@@ -124,9 +161,15 @@ def run_cycle():
             chosen = [patrol[(start + i) % len(patrol)]
                       for i in range(step)]
             _state["rotate"] = (start + step) % len(patrol)
-            for cam in chosen:
+            for i, cam in enumerate(chosen):
+                # every fourth cycle the lead camera gives a
+                # timelapse clip (video + room audio) instead
+                # of a still — the loop reviews motion and
+                # sound together, at stills' pace otherwise
                 e = _grab(cam, "attention" if rose else "patrol",
-                          level_db)
+                          level_db,
+                          clip=(i == 0
+                                and _state["cycles"] % 4 == 3))
                 if e:
                     grabbed.append(e["path"])
             if rose and patrol[0] not in chosen:
@@ -203,6 +246,8 @@ def ping(req):
 def status(req):
     cfg = dwell_mod.load_loop_config()
     st = dwell_mod.load_state()
+    verdict = governor_mod.assess(dwell_mod.DWELL_DIR,
+                                  _ram_gb())
     return {"status": "ok", "enabled": cfg["enabled"],
             "dwell_s": cfg["dwell_s"],
             "last_cycle": st.get("last_cycle"),
@@ -210,6 +255,15 @@ def status(req):
             "last_level": st.get("last_level"),
             "last_attention": st.get("last_attention"),
             "queue_depth": dwell_mod.queue_depth(),
+            "paused_reason": st.get("paused_reason"),
+            "governor": {
+                "used_mb": verdict["used_mb"],
+                "cap_mb": verdict["budget"]["storage_cap_mb"],
+                "free_disk_gb": verdict["free_disk_gb"],
+                "load1": verdict["load1"],
+                "avail_ram_mb": verdict["avail_ram_mb"],
+                "ok": verdict["ok"],
+                "reason": verdict["reason"]},
             "telegram": notify_mod.status()}
 
 

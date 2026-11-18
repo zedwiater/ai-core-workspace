@@ -900,12 +900,19 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
                     time.strftime("%H:%M:%S",
                                   time.localtime(last))
                     if last else "no patrol yet")
+            gov = resp.get("governor") or {}
+            gov_line = (f"Governor: store {gov.get('used_mb')} "
+                        f"of {gov.get('cap_mb')} MB · disk free "
+                        f"{gov.get('free_disk_gb')} GB · load "
+                        f"{gov.get('load1')}")
+            if resp.get("paused_reason"):
+                gov_line += f"\nPaused: {resp['paused_reason']}"
             dwell_status.set_text(
                 f"{'Loop ON' if resp.get('enabled') else 'Loop OFF'}"
                 f" · every {resp.get('dwell_s')}s · {when} · "
                 f"review queue: {resp.get('queue_depth')} · "
                 f"last level: {resp.get('last_level')} dB\n"
-                f"{tg_line}")
+                f"{tg_line}\n{gov_line}")
             return False
         threading.Thread(target=work, daemon=True).start()
     watch_sw, watch_buf = _text_view()

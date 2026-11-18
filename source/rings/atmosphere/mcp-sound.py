@@ -65,14 +65,79 @@ def has_stop_word(text):
     return any(re.search(p, t) for p in STOP_WORDS)
 
 
+def _session_env():
+    """The environment a capture needs to reach the user's
+    sound server. A system service starts with none of it —
+    no XDG_RUNTIME_DIR, no session bus — and its pulse
+    attempts die or fall through to raw devices that may
+    be an empty jack (found live, 2026-11-18)."""
+    env = dict(os.environ)
+    uid = os.getuid()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS",
+                   f"unix:path=/run/user/{uid}/bus")
+    return env
+
+
+def pipewire_sources(env=None, runner=subprocess.run):
+    """The named capture sources the sound server offers.
+    The DEFAULT source is not always the mic: on Zak's
+    laptop the default maps to an empty headset port
+    (digital silence forever) while the internal digital
+    mics live on a named source — the app walked only
+    'default', heard zeros, and reported a dead mic for a
+    day while the machine heard fine (2026-11-18)."""
+    try:
+        r = runner(["pactl", "list", "short", "sources"],
+                   capture_output=True, text=True, timeout=5,
+                   env=env or _session_env())
+        names = []
+        for line in (r.stdout or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2 and "input" in parts[1] \
+                    and not parts[1].endswith(".monitor"):
+                names.append(parts[1])
+        return names[:4]
+    except Exception:
+        return []
+
+
+def sources_muted(env=None, runner=subprocess.run):
+    """True when every real capture source is muted in the
+    sound server — the other way a working mic reads as
+    digital silence. Reported, never silently overridden:
+    a mute may be the user's own privacy choice."""
+    try:
+        r = runner(["pactl", "list", "sources"],
+                   capture_output=True, text=True, timeout=5,
+                   env=env or _session_env())
+        states = []
+        for block in (r.stdout or "").split("Source #")[1:]:
+            name_line = next((ln for ln in block.splitlines()
+                              if "Name:" in ln), "")
+            if ".monitor" in name_line:
+                continue
+            mute = next((ln.strip() for ln in block.splitlines()
+                         if "Mute:" in ln), "")
+            if mute:
+                states.append(mute.endswith("yes"))
+        return bool(states) and all(states)
+    except Exception:
+        return False
+
+
 def capture_inputs(sys_root="/sys/class/sound"):
     """Candidate capture inputs, best first. PipeWire systems
     serve the mic through the pulse shim — raw ALSA 'default'
     I/O-errors on SOF hardware while pulse records fine
-    (reference laptop, 2026-11-18) — so pulse leads, ALSA
-    default follows, and the first capture card's hardware
-    device is the last resort."""
-    inputs = [("pulse", "default"), ("alsa", "default")]
+    (reference laptop, 2026-11-18) — so pulse leads: the
+    default source first, then every NAMED source (the
+    default can be an empty port while the real mic sits
+    on a named one). ALSA default follows, and the first
+    capture card's hardware device is the last resort."""
+    inputs = [("pulse", "default")]
+    inputs += [("pulse", name) for name in pipewire_sources()]
+    inputs.append(("alsa", "default"))
     for p in sorted(glob.glob(os.path.join(sys_root, "pcm*"))):
         base = os.path.basename(p)
         if base.endswith("c"):
@@ -98,9 +163,7 @@ def capture_clip(seconds=2, runner=subprocess.run):
     and a raw hardware device can 'succeed' with digital
     silence (-120 dB — an unrouted SOF path), so a silent
     file does not end the walk, it just gets noted."""
-    env = dict(os.environ)
-    env.setdefault("XDG_RUNTIME_DIR",
-                   f"/run/user/{os.getuid()}")
+    env = _session_env()
     failures = []
     silent = None
     stamp = int(time.time())
@@ -203,12 +266,21 @@ def check_microphone(seconds=2):
         text = transcribe(clip)
         if text is None:
             if "digital silence" in (used or ""):
+                if sources_muted():
+                    return None, (
+                        "every microphone path recorded only "
+                        "digital silence, and every capture "
+                        "source is MUTED in the sound settings "
+                        "— the app hears nothing until a source "
+                        "is unmuted (it will not unmute on its "
+                        "own; a mute can be a privacy choice)")
                 return None, (f"every microphone path recorded "
                               f"only digital silence (last: "
                               f"{used}) — the input is likely "
-                              f"muted or unrouted on this "
-                              f"machine, and no speech-to-text "
-                              f"is installed")
+                              f"unrouted on this machine (the "
+                              f"default source may be an empty "
+                              f"port), and no speech-to-text is "
+                              f"installed")
             return None, (f"the microphone works (recorded via "
                           f"{used} at {level} dB) but no "
                           f"speech-to-text is installed on this "

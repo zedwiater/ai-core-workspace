@@ -112,6 +112,99 @@ class NotifyTests(unittest.TestCase):
         self.assertIn("BotFather", out["why"])
 
 
+class MicPathTests(unittest.TestCase):
+    """The laptop mic fix (2026-11-18): the default source
+    was an empty port; the real mic is a NAMED source, and
+    a muted server must be named, not mistaken for death."""
+
+    def _sound(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "mcp_sound2", os.path.join(
+                ROOT, "source", "rings", "atmosphere",
+                "mcp-sound.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_named_sources_parsed_monitors_skipped(self):
+        sound = self._sound()
+
+        class R:
+            stdout = ("553\talsa_input.usb.mic\tPipeWire\n"
+                      "554\talsa_output.hdmi.monitor\tPipeWire\n"
+                      "555\talsa_input.pci.pro-input-1\tP\n")
+        names = sound.pipewire_sources(runner=lambda *a, **k: R())
+        self.assertEqual(names, ["alsa_input.usb.mic",
+                                 "alsa_input.pci.pro-input-1"])
+
+    def test_all_muted_detected(self):
+        sound = self._sound()
+
+        class R:
+            stdout = ("Source #1\n\tName: alsa_input.a\n"
+                      "\tMute: yes\nSource #2\n"
+                      "\tName: alsa_output.x.monitor\n"
+                      "\tMute: no\n")
+        self.assertTrue(sound.sources_muted(
+            runner=lambda *a, **k: R()))
+        R.stdout = ("Source #1\n\tName: alsa_input.a\n"
+                    "\tMute: no\n")
+        self.assertFalse(sound.sources_muted(
+            runner=lambda *a, **k: R()))
+
+
+class GovernorTests(unittest.TestCase):
+    """Zak's caps (2026-11-18): background dwell may never
+    compromise storage, RAM, or the user's busy machine."""
+
+    def test_tier_caps(self):
+        from core import governor
+        self.assertEqual(governor.budget_for(7.6)["storage_cap_mb"],
+                         300)
+        self.assertEqual(governor.budget_for(16)["storage_cap_mb"],
+                         1024)
+        self.assertEqual(governor.budget_for(48)["storage_cap_mb"],
+                         2048)
+
+    def test_over_cap_prunes_oldest_first(self):
+        from core import governor
+        with tempfile.TemporaryDirectory() as d:
+            frames = os.path.join(d, "frames")
+            os.makedirs(frames)
+            old = os.path.join(frames, "old.jpg")
+            new = os.path.join(frames, "new.jpg")
+            for p in (old, new):
+                with open(p, "wb") as f:
+                    f.write(b"x" * 600_000)
+            os.utime(old, (1000, 1000))
+            freed = governor.prune_to_cap(d, 1)
+            self.assertGreater(freed, 0)
+            self.assertFalse(os.path.exists(old))
+            self.assertTrue(os.path.exists(new))
+
+    def test_assess_names_its_throttle(self):
+        from core import governor
+        with tempfile.TemporaryDirectory() as d:
+            v = governor.assess(d, 7.6)
+            self.assertIn("used_mb", v)
+            self.assertIn("budget", v)
+
+
+class ClipWiringTests(unittest.TestCase):
+    def test_vision_has_clip_and_dwell_uses_it(self):
+        vision = open(os.path.join(
+            ROOT, "source", "rings", "atmosphere",
+            "mcp-vision.py")).read()
+        self.assertIn('"clip": clip', vision)
+        self.assertIn("def clip_frame", vision)
+        svc = open(os.path.join(
+            ROOT, "source", "rings", "atmosphere",
+            "mcp-dwell.py")).read()
+        self.assertIn("governor", svc)
+        self.assertIn('clip=(i == 0', svc)
+
+
 class WiringTests(unittest.TestCase):
     def test_service_and_installer_carry_dwell(self):
         install = open(os.path.join(ROOT, "install.sh")).read()
