@@ -454,12 +454,26 @@ def attach(notebook, on_model_choice=None):
     nodes_sw, nodes_buf = _text_view()
     dwell_sw, dwell_buf = _text_view()
     watch_sw, watch_buf = _text_view()
+    watch_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    links_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    links_box.set_margin_start(12)
+    links_box.set_margin_top(8)
+    watch_box.append(links_box)
+    watch_box.append(watch_sw)
+
+    def pop_watch(state):
+        watch_buf.set_text(watch_text(state["watch"], state["watch_path"]))
+        while (child := links_box.get_first_child()) is not None:
+            links_box.remove(child)
+        for link in service_links(state["watch"]):
+            btn = Gtk.LinkButton(uri=link["url"],
+                                 label=f"Open {link['service']}")
+            links_box.append(btn)
     populates["nodes"] = lambda s: nodes_buf.set_text(
         nodes_text(s["crawl"], s["reports"]))
     populates["dwell"] = lambda s: dwell_buf.set_text(
         dwell_text(s["social"], s["social_path"], s["crawl"]))
-    populates["watch"] = lambda s: watch_buf.set_text(
-        watch_text(s["watch"], s["watch_path"]))
+    populates["watch"] = pop_watch
 
     # --- Help & Support ---
     help_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -479,7 +493,7 @@ def attach(notebook, on_model_choice=None):
 
     pages = [("Conduit", home_box), ("Joy Gradient", joy_sw),
              ("Nodes", nodes_sw), ("Dwell", dwell_sw),
-             ("Roam Watch", watch_sw), ("Help & Support", help_box)]
+             ("Roam Watch", watch_box), ("Help & Support", help_box)]
     for i, (title, widget) in enumerate(pages):
         if i == 0:
             notebook.insert_page(widget, Gtk.Label(label=title), 0)
@@ -617,3 +631,23 @@ def _show_model_dialog(notebook, advice, on_choice):
         return True
     except Exception:
         return False
+
+def service_links(watch):
+    """Clickable service doors from a hub watch (Zak, 2026-11-17:
+    'I should be able to do pretty much everything from that app,
+    including click the links for Frigate'). Every suggestion whose
+    linking options name an http door becomes a link — except
+    credential pointers, which are information, not doors."""
+    links, seen = [], set()
+    if not watch:
+        return links
+    for s in watch.get("suggestions", []):
+        for o in s.get("linking_options", []):
+            target = (o.get("target") or "").strip()
+            option = (o.get("option") or "").lower()
+            if target.startswith("http") and "credential" not in option \
+                    and target not in seen:
+                seen.add(target)
+                links.append({"service": s.get("service", "service"),
+                              "url": target})
+    return links

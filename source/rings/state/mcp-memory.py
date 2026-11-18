@@ -18,7 +18,26 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from core.ring_service import serve
 
 PORT = 9108
-DB = "/opt/ai-core/george_memory.db"
+
+
+def _db_path():
+    """Installed layout first (/opt/ai-core, when it exists and is
+    writable); a user-space fallback otherwise. A state node must
+    never die at import because a root-owned tree isn't there yet —
+    found live 2026-11-17: the node crash-looped on PermissionError
+    whenever /opt/ai-core was absent or not yet chowned."""
+    env = os.environ.get("AI_CORE_MEMORY_DB")
+    if env:
+        return env
+    base = "/opt/ai-core"
+    if os.path.isdir(base) and os.access(base, os.W_OK):
+        return os.path.join(base, "george_memory.db")
+    fallback = os.path.expanduser("~/.local/share/ai-core")
+    os.makedirs(fallback, exist_ok=True)
+    return os.path.join(fallback, "george_memory.db")
+
+
+DB = _db_path()
 
 
 def init():

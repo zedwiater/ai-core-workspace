@@ -106,6 +106,22 @@ class TestModelAdvice(unittest.TestCase):
         self.assertEqual(a["state"], "door-silent")
 
 
+class TestServiceLinks(unittest.TestCase):
+    def test_frigate_ui_becomes_a_link_pointer_does_not(self):
+        watch = {"suggestions": [
+            {"service": "Frigate NVR", "linking_options": [
+                {"option": "local web UI", "target": "http://localhost:8971"},
+                {"option": "credential pointer",
+                 "target": "password manager: Frigate"},
+                {"option": "feed hookup", "target": "senses/vision"}]}]}
+        links = cp.service_links(watch)
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["url"], "http://localhost:8971")
+
+    def test_no_watch_no_links(self):
+        self.assertEqual(cp.service_links(None), [])
+
+
 class TestFaq(unittest.TestCase):
     def test_synonym_search_finds_refusal(self):
         hits = cp.faq_filter("refused")
