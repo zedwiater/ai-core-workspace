@@ -1,16 +1,27 @@
 # --- AI Core service label ---
 # Label-Name: vision
 # Label-Origin: ai-core-workspace build (Zak/Muse)
-# Label-Version: 1
-# Label-Does: camera frame grabs from local V4L2/USB cameras
+# Label-Version: 2
+# Label-Does: camera frame grabs — local V4L2/USB cameras discovered
+#             on THIS machine, plus any RTSP cameras the owner
+#             lists in ~/.config/ai-core/cameras.json
 # --- end label ---
 #!/usr/bin/env python3
-"""George's MCP Vision Service — grab camera frames via RTSP
+"""Vision Service — grab camera frames.
 
 Ring: atmosphere (outer ring — world-facing, takes the weather).
 Runs the shared ring lifecycle: register -> serve -> report health.
+
+Camera discovery (rewritten 2026-11-18): the first version of
+this service shipped with a hardcoded map of one household's
+RTSP cameras baked into the code — on every other machine it
+offered cameras that did not exist and could not see the
+webcam in front of it. Cameras are DATA, not code: local
+devices are discovered from /sys/class/video4linux, and an
+owner's network cameras belong in their own config file.
 """
 import base64
+import json
 import os
 import subprocess
 import sys
@@ -21,50 +32,112 @@ from core.ring_service import serve
 PORT = 9103
 CACHE_DIR = "/tmp/george_cam"
 os.makedirs(CACHE_DIR, exist_ok=True)
-
-CAMERAS = {
-    "front-door": "rtsp://192.168.68.97:8554/front-door",
-    "back-yard": "rtsp://192.168.68.97:8554/back-yard-cam",
-    "kitchen": "rtsp://192.168.68.97:8554/kitchen-cam",
-    "basement": "rtsp://192.168.68.97:8554/basement",
-    "outside-front": "rtsp://192.168.68.97:8554/outside-front",
-    "master-front": "rtsp://192.168.68.97:8554/master-front",
-    "kids-room": "rtsp://192.168.68.97:8554/kids-room",
-    "hillbilly-front": "rtsp://192.168.68.97:8554/hillbilly-front",
-    "under-back-porch": "rtsp://192.168.68.97:8554/under-back-porch",
-}
+CONFIG_PATH = os.path.expanduser("~/.config/ai-core/cameras.json")
+SYS_ROOT = "/sys/class/video4linux"
 
 
-def grab_frame(camera_name):
-    """Grab a single frame from an RTSP camera"""
-    rtsp_url = CAMERAS.get(camera_name)
-    if not rtsp_url:
-        return {"status": "error", "message": f"Unknown camera: {camera_name}"}
-
-    outpath = f"{CACHE_DIR}/{camera_name}.jpg"
+def local_cameras(sys_root=None, dev_root="/dev"):
+    """This machine's own cameras: {name: entry} from the
+    video4linux tree. The first device also answers to the
+    plain name 'webcam' — the name every model reaches for."""
+    root = sys_root or SYS_ROOT
+    found = {}
     try:
-        subprocess.run([
-            "ffmpeg", "-y", "-rtsp_transport", "tcp",
-            "-i", rtsp_url,
-            "-frames:v", "1", "-s", "640x480",
-            "-update", "1", outpath
-        ], capture_output=True, text=True, timeout=15)
+        entries = sorted(os.listdir(root))
+    except OSError:
+        return found
+    for entry in entries:
+        device = os.path.join(dev_root, entry)
+        if not os.path.exists(device):
+            continue
+        name = "Webcam"
+        try:
+            with open(os.path.join(root, entry, "name")) as f:
+                name = f.read().strip() or name
+        except OSError:
+            pass
+        found[f"webcam ({name})"] = {"kind": "local",
+                                     "device": device}
+    if found:
+        first = next(iter(found.values()))
+        found = {"webcam": first, **found}
+    return found
 
-        if os.path.exists(outpath) and os.path.getsize(outpath) > 1000:
-            with open(outpath, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
-            return {"status": "ok", "camera": camera_name, "path": outpath, "base64": b64[:200] + "...", "size": os.path.getsize(outpath)}
-        return {"status": "error", "message": "Frame too small or missing"}
+
+def configured_cameras(path=None):
+    """The owner's network cameras, from their config file:
+    {"name": "rtsp://..."}. Absent or unreadable = none."""
+    try:
+        with open(path or CONFIG_PATH) as f:
+            data = json.load(f)
+        return {k: {"kind": "rtsp", "url": v}
+                for k, v in data.items() if isinstance(v, str)}
+    except Exception:
+        return {}
+
+
+def camera_map(sys_root=None, path=None, dev_root="/dev"):
+    """Configured cameras first, local discovery last — so the
+    plain 'webcam' always means the camera on THIS machine."""
+    merged = configured_cameras(path)
+    merged.update(local_cameras(sys_root, dev_root))
+    return merged
+
+
+def _ffmpeg_error(r):
+    tail = (r.stderr or "").strip().splitlines()
+    return tail[-1] if tail else f"ffmpeg exited {r.returncode}"
+
+
+def grab_frame(camera_name, cmap=None):
+    """Grab a single frame from a discovered or configured
+    camera. Failures name the actual cause — a silent empty
+    result once hid a broken ffmpeg for a whole evening."""
+    cmap = cmap if cmap is not None else camera_map()
+    entry = cmap.get(camera_name)
+    if not entry:
+        known = ", ".join(cmap) or "none"
+        return {"status": "error",
+                "message": f"Unknown camera: {camera_name}. "
+                           f"Cameras here: {known}"}
+    outpath = os.path.join(
+        CACHE_DIR,
+        camera_name.replace("/", "_").replace(" ", "_") + ".jpg")
+    if entry["kind"] == "local":
+        cmd = ["ffmpeg", "-y", "-f", "v4l2", "-i", entry["device"],
+               "-frames:v", "1", "-s", "640x480",
+               "-update", "1", outpath]
+    else:
+        cmd = ["ffmpeg", "-y", "-rtsp_transport", "tcp",
+               "-i", entry["url"],
+               "-frames:v", "1", "-s", "640x480",
+               "-update", "1", outpath]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=20)
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {"status": "error",
+                "message": f"frame grab could not run: {e}"}
+    if os.path.exists(outpath) and os.path.getsize(outpath) > 1000:
+        with open(outpath, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        return {"status": "ok", "camera": camera_name,
+                "path": outpath, "base64": b64[:200] + "...",
+                "size": os.path.getsize(outpath)}
+    return {"status": "error",
+            "message": f"no frame from {camera_name}: "
+                       f"{_ffmpeg_error(r)}"}
 
 
-def list_cameras():
-    return {"status": "ok", "cameras": list(CAMERAS.keys()), "count": len(CAMERAS)}
+def list_cameras(cmap=None):
+    cmap = cmap if cmap is not None else camera_map()
+    return {"status": "ok", "cameras": list(cmap.keys()),
+            "count": len(cmap),
+            "details": {k: v["kind"] for k, v in cmap.items()}}
 
 
 def ping(req):
-    return {"status": "pong", "service": "george-vision"}
+    return {"status": "pong", "service": "vision"}
 
 
 def list_cams(req):
@@ -76,9 +149,10 @@ def grab(req):
 
 
 def grab_all(req):
+    cmap = camera_map()
     results = {}
-    for name in CAMERAS:
-        results[name] = grab_frame(name)
+    for name in cmap:
+        results[name] = grab_frame(name, cmap)
     return {"status": "ok", "frames": results}
 
 

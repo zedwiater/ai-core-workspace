@@ -97,3 +97,25 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VisibilityTests(unittest.TestCase):
+    """Zak (2026-11-18): the permissions setting 'should have
+    been a little more obvious — I shouldn't have had to dig
+    for it.' The choice sits at the top of the landing, and
+    the chat header carries the standing level."""
+
+    def test_landing_reorders_agreement_to_the_top(self):
+        src = open(os.path.join(os.path.dirname(__file__), "..",
+                                "source", "app",
+                                "conduit_pages.py")).read()
+        self.assertIn("reorder_child_after", src)
+        self.assertIn("Permissions — what this app", src)
+
+    def test_header_chip_shows_the_level(self):
+        src = open(os.path.join(os.path.dirname(__file__), "..",
+                                "source", "app",
+                                "ai-client.py")).read()
+        self.assertIn("perm_btn", src)
+        self.assertIn("Permissions: ", src)
+        self.assertIn("set_current_page(0)", src)

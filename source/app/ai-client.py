@@ -264,6 +264,20 @@ class AIClient(Adw.Application):
         self.update_btn.connect("clicked", self._on_update_click)
         header.append(self.update_btn)
 
+        # The permissions level, always visible, one click from
+        # changing it (Zak, 2026-11-18: the setting was buried
+        # at the bottom of a page — it should never need digging
+        # for). Jumps to the Conduit page, where the choice
+        # itself lives at the top.
+        self.perm_btn = Gtk.Button(label="Permissions: Observer")
+        self.perm_btn.set_tooltip_text(
+            "What this app is allowed to do. Click to change "
+            "it — the choice is at the top of the Conduit page.")
+        self.perm_btn.connect(
+            "clicked",
+            lambda _b: self.notebook.set_current_page(0))
+        header.append(self.perm_btn)
+
         # (No second title here — the window's own header bar
         # already says "AI Core Workspace"; a duplicate title in
         # this row only crowded it, 2026-11-18.)
@@ -400,6 +414,10 @@ class AIClient(Adw.Application):
                                  on_agreement=self._apply_agreement)
         except Exception:
             pass
+        if hasattr(self, "perm_btn"):
+            self.perm_btn.set_label(
+                "Permissions: "
+                + self.agreement_level.capitalize())
         self.notebook.connect("switch-page", self._on_page_switch)
         # A window needs its titlebar (field report 2026-11-18:
         # no way to move the window, no X to close it, sizing
@@ -2260,6 +2278,9 @@ class AIClient(Adw.Application):
         tool gate reads it on every call, so dropping back takes
         effect immediately."""
         self.agreement_level = level
+        if hasattr(self, "perm_btn"):
+            self.perm_btn.set_label(
+                "Permissions: " + level.capitalize())
 
     def _apply_conduit_comfort(self, gradient):
         """One dial, not two: the Joy Gradient choice also sets the

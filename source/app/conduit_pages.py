@@ -501,8 +501,8 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
     # The privilege agreement — three levels, the user's choice,
     # changeable any time (Zak, 2026-11-18). Default observer:
     # begin as chatbot + search assist, no permissions granted.
-    agr_title = Gtk.Label(label="Your agreement with this app — "
-                                "what it may do")
+    agr_title = Gtk.Label(label="Permissions — what this app "
+                                "is allowed to do")
     agr_title.set_xalign(0)
     agr_title.set_margin_start(12)
     agr_title.set_margin_top(14)
@@ -531,6 +531,7 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
         if on_agreement is not None:
             on_agreement(level)
 
+    agr_btns = []
     for lv in agreement_mod.LEVELS:
         abtn = Gtk.CheckButton(label=lv["name"])
         if agr_group[0] is not None:
@@ -541,11 +542,21 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
         abtn.set_active(lv["id"] == current_level)
         abtn.connect("toggled", agr_chosen, lv["id"])
         home_box.append(abtn)
+        agr_btns.append(abtn)
         if lv["id"] == current_level:
             agr_blurb.set_text(lv["blurb"])
             agr_disc.set_visible(lv["id"] == "all")
     home_box.append(agr_blurb)
     home_box.append(agr_disc)
+
+    # Permissions are the FIRST choice on the page, not the
+    # last (Zak, 2026-11-18: he had to dig for the setting).
+    # However the widgets were constructed, the visible order
+    # is: greeting, permissions, everything else.
+    _prev = greet_sw
+    for _w in [agr_title] + agr_btns + [agr_blurb, agr_disc]:
+        home_box.reorder_child_after(_w, _prev)
+        _prev = _w
 
     def pop_home(state):
         crawl = state["crawl"]
