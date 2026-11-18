@@ -33,6 +33,9 @@ if [[ "${1:-}" == "uninstall" ]]; then
         systemctl disable "ai-mcp-$name.service" 2>/dev/null || true
         rm -f "$SYSTEMD_DIR/ai-mcp-$name.service"
     done
+    systemctl stop ai-core-sos.service 2>/dev/null || true
+    systemctl disable ai-core-sos.service 2>/dev/null || true
+    rm -f "$SYSTEMD_DIR/ai-core-sos.service"
     rm -f /usr/local/bin/ai-client
     rm -f /usr/local/bin/ai-core-report
     rm -f /usr/local/bin/ai-core-update
@@ -363,6 +366,28 @@ SVC_EOF
     systemctl enable "ai-mcp-$name.service" --now 2>/dev/null || true
     systemctl restart "ai-mcp-$name.service" 2>/dev/null || true
 done
+
+# The SOS resident: its own unit, separate fate from the
+# watchdog that feeds its log (Zak, 2026-11-18).
+runuser -u "$REAL_USER" -- systemctl --user stop ai-core-sos.service 2>/dev/null || true
+runuser -u "$REAL_USER" -- systemctl --user disable ai-core-sos.service 2>/dev/null || true
+rm -f "$REAL_HOME/.config/systemd/user/ai-core-sos.service" 2>/dev/null || true
+cat << SVC_EOF > "$SYSTEMD_DIR/ai-core-sos.service"
+[Unit]
+Description=AI Core SOS resident (fires the SOS from the watchdog's log)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 $TARGET_DIR/sos_resident.py
+Restart=always
+RestartSec=5
+User=$REAL_USER
+
+[Install]
+WantedBy=multi-user.target
+SVC_EOF
+systemctl enable ai-core-sos.service --now 2>/dev/null || true
+systemctl restart ai-core-sos.service 2>/dev/null || true
 
 echo "🔗 Step 7: Desktop integration..."
 cat << 'BIN_EOF' > /usr/local/bin/ai-client

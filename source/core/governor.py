@@ -128,6 +128,28 @@ def assess(dwell_dir, ram_gb, recordings_dir=RECORDINGS_DIR):
     return out
 
 
+def limp_verdict(door_ok, shelf_sizes_gb, ram_gb):
+    """The worst-case question (Zak, 2026-11-18): if the
+    brain can't run, does the machine fall to LIMP MODE —
+    the best low-tier configuration still functional — or
+    does it lock up? Limp means: senses and dwell alive,
+    the script floor (web search + status) alive, and a
+    message out asking for a hard reset or an update.
+    Returns (mode, why): mode is 'full' or 'limp'."""
+    if not door_ok:
+        return "limp", ("the model door (Ollama) is not "
+                        "answering — no brain can seat")
+    if not shelf_sizes_gb:
+        return "limp", ("the model shelf is empty — nothing "
+                        "to seat")
+    smallest = min(shelf_sizes_gb)
+    if smallest * 1.3 > max(0.0, ram_gb - 2.0):
+        return "limp", (f"even the smallest model on the "
+                        f"shelf ({smallest} GB) does not fit "
+                        f"this machine's {ram_gb:.1f} GB")
+    return "full", ""
+
+
 def prune_to_cap(dwell_dir, cap_mb,
                  recordings_dir=RECORDINGS_DIR):
     """Oldest-first eviction across the dwell store and the

@@ -16,6 +16,7 @@ is OFF until the user switches it on (Dwell page or the
 set action) — an observer the user didn't ask for is a
 bug, not a feature.
 """
+import json
 import os
 import shutil
 import socket
@@ -28,6 +29,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(
 from core import dwell as dwell_mod
 from core import governor as governor_mod
 from core import notify as notify_mod
+from core import sos as sos_mod
 from core.protocol import call_service
 from core.ring_service import serve
 
@@ -99,6 +101,48 @@ def _ram_gb():
     return 8.0
 
 
+def _brain_probe():
+    """(door_ok, [shelf sizes GB]) from the model door."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                "http://127.0.0.1:11434/api/tags",
+                timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+        sizes = [m.get("size", 0) / 1e9
+                 for m in data.get("models", [])]
+        return True, sizes
+    except Exception:
+        return False, []
+
+
+def _watch_brain():
+    """The limp watchdog (Zak, 2026-11-18): if the brain
+    can't run, the machine falls to limp mode — senses,
+    dwell and the script floor alive. The watchdog does
+    NOT send the SOS itself: it UPDATES the SOS log
+    (core/sos.py) every cycle, and the standalone SOS
+    resident fires from that log — so the call for help
+    survives the watchdog, escalates while a fix request
+    is ignored, and carries the most recent failed state
+    and its needs for realignment."""
+    door_ok, sizes = _brain_probe()
+    mode, why = governor_mod.limp_verdict(door_ok, sizes,
+                                          _ram_gb())
+    prev = _state.get("mode")
+    _state["mode"] = mode
+    _state["limp_why"] = why
+    try:
+        sos_mod.record(mode, why)
+    except Exception:
+        pass
+    if prev is not None and mode != prev:
+        dwell_mod.log_timeline(
+            {"kind": "limp" if mode == "limp" else "recovered",
+             "why": why})
+    return mode, why
+
+
 def run_cycle():
     """One patrol. Never raises — a sick cycle is a logged
     cycle, not a dead service."""
@@ -108,6 +152,7 @@ def run_cycle():
         cfg = dwell_mod.load_loop_config()
         if not cfg["enabled"]:
             return {"status": "off"}
+        _watch_brain()
         # The governor rules before anything is spent: an
         # over-cap store prunes first; a busy or squeezed
         # machine skips the cycle, and the skip is logged.
@@ -205,7 +250,9 @@ def run_cycle():
              "cycles": _state["cycles"],
              "last_level": level_db,
              "last_attention": _state["last_attention"],
-             "queue_depth": dwell_mod.queue_depth()})
+             "queue_depth": dwell_mod.queue_depth(),
+             "mode": _state.get("mode"),
+             "limp_why": _state.get("limp_why", "")})
         return {"status": "ok", "grabbed": grabbed,
                 "level_db": level_db, "rose": rose,
                 "emergency": emergency,
@@ -255,6 +302,9 @@ def status(req):
             "last_level": st.get("last_level"),
             "last_attention": st.get("last_attention"),
             "queue_depth": dwell_mod.queue_depth(),
+            "mode": st.get("mode") or _state.get("mode"),
+            "limp_why": st.get("limp_why", ""),
+            "sos": sos_mod.load(),
             "paused_reason": st.get("paused_reason"),
             "governor": {
                 "used_mb": verdict["used_mb"],

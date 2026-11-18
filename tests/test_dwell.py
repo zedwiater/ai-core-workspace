@@ -191,6 +191,103 @@ class GovernorTests(unittest.TestCase):
             self.assertIn("budget", v)
 
 
+class LimpTests(unittest.TestCase):
+    """The SOS minimum (Zak, 2026-11-18): worst case is
+    limp mode — best low config, still messaging — never
+    a lockup or a bare error code."""
+
+    def test_limp_verdicts(self):
+        from core import governor
+        self.assertEqual(governor.limp_verdict(False, [], 16),
+                         ("limp", governor.limp_verdict(
+                             False, [], 16)[1]))
+        mode, why = governor.limp_verdict(False, [2.0], 16)
+        self.assertEqual(mode, "limp")
+        self.assertIn("not answering", why)
+        mode, why = governor.limp_verdict(True, [], 16)
+        self.assertEqual(mode, "limp")
+        self.assertIn("shelf is empty", why)
+        mode, why = governor.limp_verdict(True, [9.0], 7.6)
+        self.assertEqual(mode, "limp")
+        self.assertIn("does not fit", why)
+        mode, why = governor.limp_verdict(True, [1.9, 9.0], 7.6)
+        self.assertEqual(mode, "full")
+
+    def test_watchdog_is_wired(self):
+        svc = open(os.path.join(
+            ROOT, "source", "rings", "atmosphere",
+            "mcp-dwell.py")).read()
+        self.assertIn("_watch_brain()", svc)
+        self.assertIn("sos_mod.record(mode, why)", svc)
+
+
+class SosTests(unittest.TestCase):
+    """The SOS resident's logic (Zak, 2026-11-18): the
+    watchdog updates the log; the resident fires — on the
+    episode, again while a fix is ignored, and on its own
+    when the watchdog goes silent — always backed by the
+    most recent failed state and its realignment needs."""
+
+    def setUp(self):
+        import tempfile
+        from core import sos
+        self.tmp = tempfile.mkdtemp()
+        self._old = sos.STATE_FILE
+        sos.STATE_FILE = os.path.join(self.tmp, "sos.json")
+        self.sos = sos
+
+    def tearDown(self):
+        self.sos.STATE_FILE = self._old
+
+    def test_episode_fire_then_ignored_escalation(self):
+        sos, t0 = self.sos, 1_000_000.0
+        sos.record("limp", "the model door (Ollama) is not "
+                           "answering — no brain can seat",
+                   now=t0)
+        st = sos.load()
+        fires = sos.evaluate(st, t0 + 10)
+        self.assertEqual([f["kind"] for f in fires], ["limp"])
+        self.assertIn("restart Ollama", fires[0]["needs"])
+        sos.mark_fired(False, "no chat yet", now=t0 + 10)
+        st = sos.load()
+        self.assertEqual(
+            sos.evaluate(st, t0 + 10 + sos.ESCALATE_S - 1), [])
+        # the watchdog keeps updating through the window —
+        # the machine is still limp, the fix still ignored
+        sos.record("limp", "the model door (Ollama) is not "
+                           "answering — no brain can seat",
+                   now=t0 + sos.ESCALATE_S - 60)
+        st = sos.load()
+        fires = sos.evaluate(st, t0 + 10 + sos.ESCALATE_S)
+        self.assertEqual([f["kind"] for f in fires],
+                         ["ignored"])
+        text = sos.compose("testhost", st, fires[0])
+        self.assertIn("Failed state:", text)
+        self.assertIn("Needs for realignment:", text)
+
+    def test_watchdog_silence_fires_from_the_log(self):
+        sos, t0 = self.sos, 1_000_000.0
+        sos.record("full", "", now=t0)
+        st = sos.load()
+        self.assertEqual(sos.evaluate(st, t0 + 60), [])
+        fires = sos.evaluate(st, t0 + sos.stale_after(60) + 1)
+        self.assertEqual([f["kind"] for f in fires],
+                         ["watchdog_silent"])
+        self.assertIn("watchdog", fires[0]["needs"])
+
+    def test_recovery_closes_the_episode(self):
+        sos, t0 = self.sos, 1_000_000.0
+        sos.record("limp", "the model shelf is empty — "
+                           "nothing to seat", now=t0)
+        sos.record("full", "", now=t0 + 100)
+        st = sos.load()
+        self.assertIsNone(st["episode_since"])
+        self.assertIn("last_episode", st)
+        self.assertIn("shelf is empty",
+                      st["last_episode"]["why"])
+        self.assertEqual(sos.evaluate(st, t0 + 200), [])
+
+
 class ClipWiringTests(unittest.TestCase):
     def test_vision_has_clip_and_dwell_uses_it(self):
         vision = open(os.path.join(
