@@ -336,8 +336,13 @@ class AIClient(Adw.Application):
         self.notebook.connect("switch-page", self._on_page_switch)
         self.win.set_content(self.notebook)
         self.win.present()
-        
+
         threading.Thread(target=self._monitor_services, daemon=True).start()
+        # The standing selection seats on open, same as any pick:
+        # an app that lists models while ollama ps sits empty is
+        # showing a shelf and calling it a seat.
+        threading.Thread(target=self._seat_current_model,
+                         daemon=True).start()
 
         # Themes + the base floor. The stored theme (or the plain
         # default) is proposed as the relationship on opening; the
@@ -2164,6 +2169,40 @@ class AIClient(Adw.Application):
                             chat.insert(0, chat.pop(i))
                             model_stacks.save_stacks(self.stacks)
                         break
+            # Selecting a model SEATS it (Zak, 2026-11-17: the
+            # app listed models while ollama ps sat empty). The
+            # seat runs in a thread; the header label carries the
+            # state, including an honest refusal when the model
+            # cannot fit the free memory.
+            threading.Thread(target=self._seat_current_model,
+                             daemon=True).start()
+
+    def _seat_current_model(self):
+        name = self.model
+
+        def say(text):
+            GLib.idle_add(self.serving_label.set_text, text)
+
+        try:
+            size = model_stacks.discover_sizes().get(name)
+            avail = None
+            try:
+                for line in open("/proc/meminfo"):
+                    if line.startswith("MemAvailable:"):
+                        avail = int(line.split()[1]) / (1024 ** 2)
+                        break
+            except Exception:
+                pass
+            if size is not None and avail is not None:
+                fits, why = model_stacks.fit_check(size, avail)
+                if not fits:
+                    say(f"Not seated — {name}: {why}")
+                    return
+            say(f"Seating {name}…")
+            _ok, line = model_stacks.seat_model(name)
+            say(line)
+        except Exception as e:
+            say(f"Seating {name} failed: {e}")
 
     def append_bubble(self, text, sender):
         bubble = Gtk.Label(label=text)

@@ -156,3 +156,24 @@ and prints a prefilled GitHub issue link. Nothing is sent
 automatically; the human reviews and submits. An AI asked to
 "report it" should run the command, show the file, and stop
 there — sending is the owner's act.
+
+## R10 — Chat fails, ollama ps is empty, the CLI answers EOF
+
+**Symptom:** chat errors on every model; `ollama run <model>`
+answers EOF; `ollama ps` shows nothing loaded although the app
+lists models.
+**Cause (proven, 2026-11-17):** the app never seated anything —
+a shelf listing is not a seat — and the first chat tried to load
+an 8B (5.2 GB weights) into a 7.6 GB machine with 3.1 GB free
+and no swap. The kernel OOM-killed the ollama SERVICE
+(`systemctl status ollama` / journal: "Failed with result
+'oom-kill'"), and every client of the dead door saw EOF.
+**Check:** `journalctl -u ollama -n 30` for 'oom-kill';
+`free -h` for the arithmetic (weights x 1.3 must fit the FREE
+memory, not the total).
+**Repair:** pull the model the pairing chose for the hardware
+(`ollama pull qwen2.5:3b` on a 7 GB machine) and select it.
+**Prevention:** selecting a model in the app now seats it —
+load call, then proof via /api/ps in the header — and a seat
+that cannot fit the free memory is refused with the arithmetic
+shown, before the kernel has to refuse it harder.
