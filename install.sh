@@ -186,17 +186,26 @@ wait_for_door() {
 DOOR_OK=false
 if wait_for_door; then DOOR_OK=true; fi
 
-# The shelf decides: existing models are kept, never pulled over.
-# The app's factory default becomes the resident pick on this machine.
+# The base function completes here (Zak's definition): size a
+# model for the hardware, download it, install it, seat it, set
+# its balanced smarts. Existing models are never removed and
+# never pulled over — but a shelf holding only OTHER sizes is
+# not a completed pairing. On 2026-11-17 a laptop kept two 8Bs,
+# the paired 3B was never pulled because the shelf was non-empty,
+# and the app defaulted to a model the kernel OOM-killed.
+# In merge mode (an owner's own Ollama config) all of this is
+# hands-off: list, pick the resident default, touch nothing.
 SED_MODEL="$OPTIMAL_MODEL"
+SEAT_OK=false
+SEAT_CHECKED=false
 if $DOOR_OK; then
     echo "✅ Ollama API responding"
     TAGS_JSON=$(curl -s http://127.0.0.1:11434/api/tags)
     EXISTING_MODELS=$(echo "$TAGS_JSON" | python3 -c "import json,sys; print(' '.join(m['name'] for m in json.load(sys.stdin).get('models', [])))" 2>/dev/null || true)
     if [ -n "$EXISTING_MODELS" ]; then
         echo "📚 Models already on this machine: $EXISTING_MODELS"
-        echo "   Nothing pulled. On first launch the app checks this shelf"
-        echo "   and advises — keep yours, or take the fit ($OPTIMAL_MODEL)."
+    fi
+    if [ -n "$OWNER_DROPINS" ]; then
         PICK=$(echo "$TAGS_JSON" | python3 -c "
 import json, re, sys
 def p(n):
@@ -207,28 +216,55 @@ def p(n):
 names = [m['name'] for m in json.load(sys.stdin).get('models', [])]
 print(sorted(names, key=p, reverse=True)[0] if names else '')" 2>/dev/null || true)
         [ -n "$PICK" ] && SED_MODEL="$PICK"
+        echo "   Merge mode: your shelf is yours — nothing pulled, created,"
+        echo "   or seated. The app defaults to $SED_MODEL and advises in-app."
     else
-        echo "📥 Empty shelf — pulling the paired model: $OPTIMAL_MODEL"
-        [ -n "${PAIR_SIZE_GB:-}" ] && echo "   (~${PAIR_SIZE_GB} GB download — this is the long step; everything after it is quick.)"
-        if su - "$REAL_USER" -c "ollama pull $OPTIMAL_MODEL 2>/dev/null"; then
-            # Set its layers: the pairing's GPU layer count becomes
-            # the talking model's own definition. The base model
-            # stays on the shelf untouched; ai-core-talking is the
-            # app's voice, layered for this hardware.
-            if [ -n "$PAIR_GPU_LAYERS" ]; then
+        PAIRED_PRESENT=false
+        case " $EXISTING_MODELS " in
+            *" $OPTIMAL_MODEL "*) PAIRED_PRESENT=true ;;
+        esac
+        if ! $PAIRED_PRESENT; then
+            echo "📥 The paired model for this hardware is $OPTIMAL_MODEL — pulling it now."
+            [ -n "${PAIR_SIZE_GB:-}" ] && echo "   (~${PAIR_SIZE_GB} GB download — this is the long step; everything after it is quick.)"
+            if su - "$REAL_USER" -c "ollama pull $OPTIMAL_MODEL 2>/dev/null"; then
+                PAIRED_PRESENT=true
+            else
+                echo "⚠️ Model pull deferred (run: ollama pull $OPTIMAL_MODEL)"
+            fi
+        fi
+        if $PAIRED_PRESENT; then
+            # The talking model is built FROM the paired model,
+            # with this hardware's layer plan and the balanced
+            # settings (temperature 0.6 — the house balanced point
+            # for smarts and speed). Rebuilt whenever its base is
+            # not the current pairing; the base stays untouched.
+            TALKING_PARENT=$(curl -s -X POST http://127.0.0.1:11434/api/show -d '{"name": "ai-core-talking"}' 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('details', {}).get('parent_model', ''))" 2>/dev/null || true)
+            if [ "$TALKING_PARENT" != "$OPTIMAL_MODEL" ]; then
                 MODFILE=$(mktemp /tmp/ai-core-modelfile.XXXXXX)
                 chmod 644 "$MODFILE"
-                printf "FROM %s\nPARAMETER num_gpu %s\n" "$OPTIMAL_MODEL" "$PAIR_GPU_LAYERS" > "$MODFILE"
+                printf "FROM %s\nPARAMETER num_gpu %s\nPARAMETER temperature 0.6\n" "$OPTIMAL_MODEL" "${PAIR_GPU_LAYERS:-0}" > "$MODFILE"
                 if su - "$REAL_USER" -c "ollama create ai-core-talking -f $MODFILE" 2>/dev/null; then
-                    echo "🎙️ Talking model set: ai-core-talking ($OPTIMAL_MODEL, $PAIR_GPU_LAYERS of $PAIR_TOTAL_LAYERS layers on the GPU)"
+                    echo "🎙️ Talking model set: ai-core-talking (from $OPTIMAL_MODEL, ${PAIR_GPU_LAYERS:-0} of ${PAIR_TOTAL_LAYERS:-?} layers on the GPU, balanced temperature 0.6)"
                     SED_MODEL="ai-core-talking"
                 else
-                    echo "⚠️ Layer-setting deferred — the app will use $OPTIMAL_MODEL directly."
+                    echo "⚠️ Talking-model build deferred — the app will use $OPTIMAL_MODEL directly."
                 fi
                 rm -f "$MODFILE"
+            else
+                echo "🎙️ Talking model already built from the paired model ($OPTIMAL_MODEL)."
+                SED_MODEL="ai-core-talking"
             fi
-        else
-            echo "⚠️ Model pull deferred (run: ollama pull $OPTIMAL_MODEL)"
+            # Seat it, and prove the seat in ollama ps — an
+            # install that never seated its voice has not
+            # finished the base function.
+            SEAT_CHECKED=true
+            if curl -s -X POST http://127.0.0.1:11434/api/generate -d "{\"model\": \"$SED_MODEL\", \"prompt\": \"\", \"keep_alive\": \"30m\", \"stream\": false}" >/dev/null 2>&1 \
+               && curl -s http://127.0.0.1:11434/api/ps 2>/dev/null | grep -q "\"name\": \"$SED_MODEL\""; then
+                SEAT_OK=true
+                echo "🪑 Seated and proven in ollama ps: $SED_MODEL"
+            else
+                echo "⚠️ $SED_MODEL did not seat — validation will count it."
+            fi
         fi
     fi
 else
@@ -369,6 +405,14 @@ else
     echo "  ❌ model door (Ollama NOT answering — install incomplete)"
     ALL_OK=false
 fi
+if $SEAT_CHECKED; then
+    if $SEAT_OK; then
+        echo "  ✅ talking model seated (proven in ollama ps)"
+    else
+        echo "  ❌ talking model NOT seated — install incomplete"
+        ALL_OK=false
+    fi
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -378,6 +422,10 @@ elif ! $DOOR_OK; then
     echo "⚠️ AI Core installed — INCOMPLETE: the model door is not running."
     echo "   The app works as an observer; no talking model was installed."
     echo "   Fix Ollama, then re-run this installer — re-running is safe."
+elif $SEAT_CHECKED && ! $SEAT_OK; then
+    echo "⚠️ AI Core installed — INCOMPLETE: the talking model did not seat."
+    echo "   Check free memory (free -h) and: journalctl -u ollama -n 20"
+    echo "   Then re-run this installer — re-running is safe."
 else
     echo "⚠️ AI Core installed with some inactive services."
     echo "   Check: sudo journalctl -u ai-mcp-* -n 10"

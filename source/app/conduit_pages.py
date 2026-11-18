@@ -83,7 +83,8 @@ def greeting_lines(crawl):
              f"{c['cpu']['effective_threads']} effective threads, "
              f"{round(c['ram']['effective_mb'] / 1024, 1)} GB of usable RAM, "
              f"{'a GPU (' + ', '.join(g.get('name') or (g.get('vendor', 'GPU') + ' GPU') for g in c['gpus']) + ')' if c['gpus'] else 'no GPU — models take CPU seats here'}, "
-             f"{c['disk_free_gb']} GB of free disk.",
+             f"{c['disk_free_gb']} GB of free disk"
+             f"{', and a camera (' + ', '.join(cam.get('name', cam.get('device', 'camera')) for cam in c.get('cameras', [])) + ')' if c.get('cameras') else ''}.",
              f"Working budget: {budget['max_parallel_model_tasks']} model task(s) at once. "
              f"Script tasks are never seat-bound — the floor is always up."]
     conv = tiers.get("conversation", {})
