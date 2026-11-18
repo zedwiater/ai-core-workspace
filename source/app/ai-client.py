@@ -246,6 +246,18 @@ class AIClient(Adw.Application):
         status_dot.set_margin_start(8)
         header.append(status_dot)
 
+        # Update offer: hidden unless the launch check finds the
+        # checkout ahead of the installed stamp. The daily timer
+        # (ai-core-update.timer) usually beats the user to it;
+        # this is the visible path when it hasn't.
+        self.update_btn = Gtk.Button(label="⬆ Update ready")
+        self.update_btn.set_visible(False)
+        self.update_btn.set_tooltip_text(
+            "A newer AI Core is ready. One click updates "
+            "(you'll be asked for your password).")
+        self.update_btn.connect("clicked", self._on_update_click)
+        header.append(self.update_btn)
+
         title_lbl = Gtk.Label(label="AI Core Workspace Engine")
         title_lbl.set_hexpand(True)
         header.append(title_lbl)
@@ -408,6 +420,8 @@ class AIClient(Adw.Application):
         self.win.present()
 
         threading.Thread(target=self._monitor_services, daemon=True).start()
+        threading.Thread(target=self._check_update_thread,
+                         daemon=True).start()
         # The standing selection seats on open, same as any pick:
         # an app that lists models while ollama ps sits empty is
         # showing a shelf and calling it a seat.
@@ -2267,6 +2281,45 @@ class AIClient(Adw.Application):
                     self.available_models.index(name))
         except Exception:
             pass
+
+    def _check_update_thread(self):
+        try:
+            from core import update_check
+            info = update_check.check()
+        except Exception:
+            return
+        if info.get("state") == "behind":
+            n = info.get("behind") or 0
+
+            def show():
+                self.update_btn.set_label(
+                    f"⬆ Update ready ({n} new)" if n
+                    else "⬆ Update ready")
+                self.update_btn.set_visible(True)
+            GLib.idle_add(show)
+
+    def _on_update_click(self, _btn):
+        self.update_btn.set_sensitive(False)
+        self.update_btn.set_label("Updating…")
+
+        def work():
+            if not shutil.which("pkexec"):
+                GLib.idle_add(self.update_btn.set_label,
+                              "Run: sudo ai-core-update")
+                return
+            try:
+                r = subprocess.run(
+                    ["pkexec", "/usr/local/bin/ai-core-update"],
+                    capture_output=True, text=True, timeout=900)
+                msg = ("✓ Updated — restart the app"
+                       if r.returncode == 0 else
+                       "Update failed — run sudo ai-core-update "
+                       "in a terminal")
+            except Exception:
+                msg = ("Update failed — run sudo ai-core-update "
+                       "in a terminal")
+            GLib.idle_add(self.update_btn.set_label, msg)
+        threading.Thread(target=work, daemon=True).start()
 
     def _on_model_changed(self, dropdown, pspec):
         idx = dropdown.get_selected()
