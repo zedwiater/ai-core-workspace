@@ -333,6 +333,19 @@ FAQ = [
      "the previous install first, merges with whatever is already "
      "running (your models, your tuned services), and continues. "
      "Nothing is uninstalled by running it twice."),
+    ("How do updates and fixes reach my install?",
+     "Run bash update.sh in your checkout: it pulls the latest tree "
+     "and re-runs the installer, which merges with your system and "
+     "backs up the previous install first — re-running is the patch "
+     "path. A full reset is bash install.sh uninstall, then bash "
+     "install.sh again."),
+    ("Something failed — how do I report it?",
+     "Run ai-core-report. It builds one redacted file "
+     "(~/ai-core-failure-report.md: machine shape, service states, "
+     "door state, journal tails — home path, username and hostname "
+     "stripped) and prints a prefilled GitHub issue link. You read "
+     "the file and press submit yourself; nothing is ever sent "
+     "automatically."),
     ("The installer says Ollama wasn't there — what happened?",
      "On a machine with no model door, current builds install Ollama "
      "as part of setup, pair a model to your hardware, pull it, and "

@@ -27,6 +27,7 @@ if [[ "${1:-}" == "uninstall" ]]; then
         rm -f "$SYSTEMD_DIR/ai-mcp-$name.service"
     done
     rm -f /usr/local/bin/ai-client
+    rm -f /usr/local/bin/ai-core-report
     rm -f "$DESKTOP_DIR/ai-core.desktop"
     rm -f "$REAL_HOME/.config/autostart/ai-core.desktop" 2>/dev/null || true
     rm -rf "$TARGET_DIR"
@@ -316,6 +317,12 @@ exec /usr/bin/python3 /opt/ai-core/app/ai-client.py "$@"
 BIN_EOF
 chmod +x /usr/local/bin/ai-client
 
+cat << 'BIN_EOF' > /usr/local/bin/ai-core-report
+#!/usr/bin/env bash
+exec /usr/bin/python3 /opt/ai-core/core/report.py "$@"
+BIN_EOF
+chmod +x /usr/local/bin/ai-core-report
+
 cat << DESK_EOF > "$DESKTOP_DIR/ai-core.desktop"
 [Desktop Entry]
 Name=AI Core Workspace
@@ -386,5 +393,6 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 if ! $DOOR_OK; then
     echo "🛑 Exiting non-zero: the model door never answered, so this"
     echo "   install is not complete. See the INCOMPLETE note above."
+    echo "   Build a failure report to send: ai-core-report"
     exit 1
 fi
