@@ -2,6 +2,14 @@
 """AI Core Workspace — merged client with tool interception + file attachment"""
 import gi, json, threading, os, sys, socket, base64, urllib.request
 import random, time, subprocess
+# Renderer choice, made before any Gtk surface exists: GTK 4's
+# Vulkan renderer exhausts swapchain objects on some Intel/Mesa
+# stacks and takes the whole client down (reference laptop,
+# 2026-11-17: VK_ERROR_TOO_MANY_OBJECTS, then a segfault seconds
+# after a good-looking first frame). The GL renderer is the mature
+# path on the same hardware. An owner who sets GSK_RENDERER
+# themselves wins — this is only the default.
+os.environ.setdefault("GSK_RENDERER", "gl")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from core.loop import execute_tool_payload, run_tool_loop
 from core.models import human_error
