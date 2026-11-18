@@ -235,6 +235,65 @@ def fit_check(size_gb, avail_gb):
                    f"get Ollama killed by the kernel")
 
 
+def mem_available_gb(path="/proc/meminfo"):
+    """Free-memory truth for fit decisions; 0.0 when unreadable."""
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0.0
+
+
+def pick_default_model(available, sizes, avail_gb, stack_top=None):
+    """The app's default voice (Zak, 2026-11-18): the app sets
+    ITSELF as the default — ai-core-talking, the model it built
+    for this machine — then the stack's standing top, then the
+    largest model that FITS. A model that cannot fit is never
+    the default while a fitting one exists: being born pointed
+    at an unseatable model is how the reference laptop died.
+    Falls back to the talking model even unfit (its seat refusal
+    explains the arithmetic) and finally to the first model."""
+    if not available:
+        return None
+
+    def fits(name):
+        s = sizes.get(name)
+        return s is not None and fit_check(s, avail_gb)[0]
+
+    for name in available:
+        if name.split(":")[0] == "ai-core-talking" and fits(name):
+            return name
+    if stack_top and stack_top in available and fits(stack_top):
+        return stack_top
+    fitting = [n for n in available if fits(n)]
+    if fitting:
+        return max(fitting, key=lambda n: sizes.get(n, 0))
+    for name in available:
+        if name.split(":")[0] == "ai-core-talking":
+            return name
+    return available[0]
+
+
+def model_label(name, sizes, avail_gb):
+    """What the picker shows — a name that MEANS something:
+    whose voice it is, how big it is, and whether it fits on
+    this machine (Zak, 2026-11-18: the bare model box 'means
+    nothing')."""
+    bits = []
+    if name.split(":")[0] == "ai-core-talking":
+        bits.append("the app's own voice")
+    size = sizes.get(name)
+    if size:
+        bits.append(f"{size:.1f} GB")
+        ok, _why = fit_check(size, avail_gb)
+        bits.append("fits this machine" if ok
+                    else "won't fit here")
+    return name + (" — " + " · ".join(bits) if bits else "")
+
+
 def seat_model(model, opener=None, keep_alive="30m", timeout=180):
     """Actually load a model into Ollama, then PROVE the seat via
     /api/ps. Returns (ok, line); never raises. Selecting a model
