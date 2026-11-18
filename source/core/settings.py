@@ -71,7 +71,7 @@ DEFAULTS = {
 ALLOWED = {
     "patience": {
         "dwell_minutes": (5, 15, 30, 60),
-        "turn_timeout_s": (15, 30, 60, 120),
+        "turn_timeout_s": (15, 30, 60, 120, 300),
         "explainer_dwell_ms": (300, 800, 1500),
     },
     "cadence": {

@@ -321,7 +321,8 @@ class AIClient(Adw.Application):
         try:
             import conduit_pages
             conduit_pages.attach(self.notebook,
-                                 on_model_choice=self._apply_conduit_model)
+                                 on_model_choice=self._apply_conduit_model,
+                                 on_comfort=self._apply_conduit_comfort)
         except Exception:
             pass
         self.notebook.connect("switch-page", self._on_page_switch)
@@ -877,7 +878,7 @@ class AIClient(Adw.Application):
                    60: "quietest; drift can sit an hour"})
         self._opt_choice(
             pat, "Turn timeout (seconds)",
-            [15, 30, 60, 120], o.get("patience", "turn_timeout_s"),
+            [15, 30, 60, 120, 300], o.get("patience", "turn_timeout_s"),
             lambda v: (o.set("patience", "turn_timeout_s", v),
                        self._opt_note_saved()),
             costs={15: "impatient; deep asks may clip",
@@ -2102,6 +2103,17 @@ class AIClient(Adw.Application):
         elif self.toy_source is not None:
             GLib.source_remove(self.toy_source)
             self.toy_source = None
+
+    def _apply_conduit_comfort(self, gradient):
+        """One dial, not two: the Joy Gradient choice also sets the
+        chat's standing patience, so the promise on the gradient
+        card and the timeout the chat actually uses are the same
+        number. Deep's 5 minutes is why the option list grew."""
+        try:
+            seconds = {"quick": 30, "balanced": 60, "deep": 300}[gradient]
+            self.options.set("patience", "turn_timeout_s", seconds)
+        except Exception:
+            pass
 
     def _apply_conduit_model(self, name):
         """The Conduit popup's Keep choice lands here: the resident

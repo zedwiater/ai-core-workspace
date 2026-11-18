@@ -311,6 +311,15 @@ ANNOUNCE = {
     "vision": "The sight organ is taking its seat for a short, capped review (~{load}s to load). Your conversation is not interrupted.",
 }
 
+try:  # the pairing is part of the crawl contract when available
+    from core import pairing as _pairing_mod
+except Exception:
+    try:
+        import pairing as _pairing_mod
+    except Exception:
+        _pairing_mod = None
+
+
 def main():
     out_dir = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else "."
     census = {"host": platform.node(), "os": f"{platform.system()} {platform.release()}",
@@ -319,6 +328,11 @@ def main():
               "disk_free_gb": round(shutil.disk_usage(os.path.expanduser("~")).free / 1e9),
               "runtimes": runtime_probe()}
     census["expectations"] = build(census)
+    if _pairing_mod is not None:
+        try:
+            census["pairing"] = _pairing_mod.pair(census)
+        except Exception:
+            pass
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "expectations.json"), "w") as f:
         json.dump(census, f, indent=1)

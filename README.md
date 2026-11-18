@@ -216,3 +216,20 @@ docs/INSTALL-REFINEMENT.md), existing models are advised on via a
 first-launch popup — never pulled over — and the landing carries
 plain-language switches for the script behaviors. The
 docs/conduit-app prototype remains as the design study it was.
+
+## Install (one command)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zedwiater/ai-core-workspace/geometric-nesting/get.sh | bash
+```
+
+The installer is the base function, narrated: it measures the
+hardware aptitude, pairs it with a known model, installs and
+layers that model, merges with (never overwrites) a tuned system
+already in place, and deploys the app — which opens on the crawl,
+rendered as its landing page. Supported surface: Linux with
+systemd and GTK 4 / libadwaita, from a small laptop (where the
+pairing honestly steps down and the script floor leads) to a GPU
+workstation. The crawl contract (expectations + pairing, as JSON)
+is written for AI readers as much as human ones: any agent can
+read what a node promises before asking it for work.

@@ -27,7 +27,9 @@ if [[ "${1:-}" == "uninstall" ]]; then
     rm -rf "$TARGET_DIR"
     systemctl daemon-reload
     echo "✅ AI Core uninstalled. /opt/ai-core removed. MCP services stopped."
-    echo "💡 Backup tip: Your Ollama models (~/.ollama/) and config were preserved."
+    echo "💡 Left in place, by design: Ollama itself and its models, the"
+    echo "   ai-core.conf drop-in (if the app wrote one), and your choices"
+    echo "   in ~/.config/ai-core. Remove those by hand for a clean slate."
     exit 0
 fi
 
@@ -80,11 +82,11 @@ c = json.load(open(os.path.join(sys.argv[1], "expectations.json")))
 p = pairing.pair(c)
 gl = "" if p["gpu_layers"] is None else str(p["gpu_layers"])
 tl = "" if p["total_layers"] is None else str(p["total_layers"])
-print(f"{p['model']}|{p['mode']}|{gl}|{tl}")
+print(f"{p['model']}|{p['mode']}|{gl}|{tl}|{p['size_gb']}")
 PAIR_EOF
 )
     if [ -n "$PAIR_LINE" ]; then
-        IFS='|' read -r OPTIMAL_MODEL PAIR_MODE PAIR_GPU_LAYERS PAIR_TOTAL_LAYERS <<< "$PAIR_LINE"
+        IFS='|' read -r OPTIMAL_MODEL PAIR_MODE PAIR_GPU_LAYERS PAIR_TOTAL_LAYERS PAIR_SIZE_GB <<< "$PAIR_LINE"
     fi
 fi
 if [ -n "$OPTIMAL_MODEL" ]; then
@@ -173,6 +175,7 @@ print(sorted(names, key=p, reverse=True)[0] if names else '')" 2>/dev/null || tr
         [ -n "$PICK" ] && SED_MODEL="$PICK"
     else
         echo "📥 Empty shelf — pulling the paired model: $OPTIMAL_MODEL"
+        [ -n "${PAIR_SIZE_GB:-}" ] && echo "   (~${PAIR_SIZE_GB} GB download — this is the long step; everything after it is quick.)"
         if su - "$REAL_USER" -c "ollama pull $OPTIMAL_MODEL 2>/dev/null"; then
             # Set its layers: the pairing's GPU layer count becomes
             # the talking model's own definition. The base model

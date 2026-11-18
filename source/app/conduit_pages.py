@@ -46,6 +46,10 @@ def crawl_now():
          "disk_free_gb": round(shutil.disk_usage(os.path.expanduser("~")).free / 1e9),
          "runtimes": census_mod.runtime_probe()}
     c["expectations"] = census_mod.build(c)
+    try:
+        c["pairing"] = pairing_mod.pair(c)
+    except Exception:
+        pass
     ctx = {"ports": pipes_mod.listening_ports(),
            "relay_paths": pipes_mod.mediamtx_paths()}
     found, missing, feeds = [], [], set()
@@ -137,15 +141,17 @@ def pipes_table_text(crawl):
 GRADIENTS = [
     {"id": "quick", "name": "Quick — smallest resident",
      "promise": "The smallest model stays resident: first words in about a "
-                "second, short answers, no seat changes. Depth is traded "
-                "away on purpose."},
+                "second, short answers, no seat changes. Chat patience is "
+                "30 seconds — a slow answer is cut short, never a long wait. "
+                "Depth is traded away on purpose."},
     {"id": "balanced", "name": "Balanced — ok with some delay",
      "promise": "A mid-size resident for conversation; deeper work takes an "
-                "announced seat while you watch progress. The reference "
-                "install runs here."},
+                "announced seat while you watch progress. Chat patience is "
+                "1 minute. The reference install runs here."},
     {"id": "deep", "name": "Deep — announced, streamed, minutes",
      "promise": "The biggest seat the hardware fits, loaded on announcement "
-                "with progress streamed. Slowest greetings, deepest work."},
+                "with progress streamed. Chat patience is 5 minutes — long "
+                "answers finish. Slowest greetings, deepest work."},
 ]
 
 def load_comfort():
@@ -322,6 +328,16 @@ FAQ = [
      "Each Pi runs the edge kit inside its headroom: sensing and reporting "
      "on the small nodes, compute placed on the strongest, the conduit "
      "keeping the map and the advice flowing both ways."),
+    ("The installer stopped halfway — is it safe to run again?",
+     "Yes. Re-running is the designed recovery: the installer backs up "
+     "the previous install first, merges with whatever is already "
+     "running (your models, your tuned services), and continues. "
+     "Nothing is uninstalled by running it twice."),
+    ("The installer says Ollama wasn't there — what happened?",
+     "On a machine with no model door, current builds install Ollama "
+     "as part of setup, pair a model to your hardware, pull it, and "
+     "set its layers. If the door is still silent afterwards, the "
+     "landing page states the remedy and the service commands."),
 ]
 
 HELP_INTRO = ("Help & Support — FAQ, explainers, use cases, modes.\n"
@@ -372,7 +388,7 @@ def collect_state():
             "social": social, "social_path": social_path,
             "watch": watch, "watch_path": watch_path}
 
-def attach(notebook, on_model_choice=None):
+def attach(notebook, on_model_choice=None, on_comfort=None):
     """Build the Conduit pages into the client's notebook and start
     the crawl. Returns a dict of populate callbacks (already wired);
     the landing page is inserted first and selected. When
@@ -466,6 +482,8 @@ def attach(notebook, on_model_choice=None):
         def on_pick(btn, g=g):
             if btn.get_active():
                 save_comfort(g["id"])
+                if on_comfort is not None:
+                    on_comfort(g["id"])
                 joy_status.set_text(f"Standing choice: {g['name']}. "
                                     "Expectations are written for this mode.")
         b.connect("toggled", on_pick)
@@ -536,6 +554,10 @@ def attach(notebook, on_model_choice=None):
         else:
             notebook.append_page(widget, Gtk.Label(label=title))
     notebook.set_current_page(0)
+
+    greet_buf.set_text("Crawling this machine — measuring your hardware, "
+                       "your models and your pipes. Your greeting is "
+                       "measured, not guessed; this takes a few seconds.")
 
     def work():
         try:
