@@ -27,6 +27,7 @@ from core import census as census_mod
 from core import pairing as pairing_mod
 from core import pipes as pipes_mod
 from core import agreement as agreement_mod
+from core import offers as offers_mod
 
 _MODEL_POPUP_SHOWN = False
 
@@ -490,6 +491,7 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
     import threading
 
     populates = {}
+    state_cell = {}
 
     # --- Conduit (landing): simple view first, Advanced unfolds ---
     home_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -529,6 +531,124 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
         row.append(sw)
         row.append(texts)
         home_box.append(row)
+
+    # --- Command offers: what only the user can run ---
+    # Diagnosis without prescription strands people (Zak,
+    # 2026-11-18): when something needs the user's own hands
+    # — a system repair, a group change, linking a service —
+    # the app names the exact command, the user runs it, and
+    # the app re-checks instead of taking anyone's word.
+    offers_title = Gtk.Label(label="Things only you can run — "
+                                   "exact commands")
+    offers_title.set_xalign(0)
+    offers_title.set_margin_start(12)
+    offers_title.set_margin_top(14)
+    home_box.append(offers_title)
+    offers_disc = Gtk.Label(label=offers_mod.DISCLAIMER)
+    offers_disc.set_xalign(0)
+    offers_disc.set_wrap(True)
+    offers_disc.set_margin_start(12)
+    offers_disc.set_margin_end(12)
+    home_box.append(offers_disc)
+    offers_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                         spacing=8)
+    home_box.append(offers_box)
+    offers_status = Gtk.Label(label="Checking what might need "
+                                    "your hands…")
+    offers_status.set_xalign(0)
+    offers_status.set_margin_start(12)
+    offers_box.append(offers_status)
+
+    def _offer_row(offer):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                      spacing=3)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        t = Gtk.Label(label=offer["title"])
+        t.set_xalign(0)
+        t.set_wrap(True)
+        box.append(t)
+        w = Gtk.Label(label=offer["why"])
+        w.set_xalign(0)
+        w.set_wrap(True)
+        box.append(w)
+        for cmd in offer["commands"]:
+            c = Gtk.Label(label=cmd)
+            c.set_xalign(0)
+            c.set_selectable(True)
+            c.add_css_class("monospace")
+            box.append(c)
+        ex = Gtk.Label(label=offer.get("explainer", ""))
+        ex.set_xalign(0)
+        ex.set_wrap(True)
+        box.append(ex)
+        dc = Gtk.Label(label="Yours to run, never the app's — "
+                             "double-check it online first.")
+        dc.set_xalign(0)
+        dc.set_wrap(True)
+        box.append(dc)
+        srow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                       spacing=8)
+        btn = Gtk.Button(label="Check again")
+        st = Gtk.Label(label="")
+        st.set_xalign(0)
+
+        def _check(_b, offer=offer, st=st, btn=btn):
+            btn.set_sensitive(False)
+            st.set_text("Checking…")
+
+            def work():
+                ok = offers_mod.run_check(offer["check"])
+                GLib.idle_add(_checked, ok)
+            def _checked(ok):
+                btn.set_sensitive(True)
+                st.set_text("✓ Resolved — thank you."
+                            if ok else
+                            "Still not there — run the "
+                            "command, then check again.")
+                return False
+            threading.Thread(target=work, daemon=True).start()
+        btn.connect("clicked", _check)
+        srow.append(btn)
+        srow.append(st)
+        box.append(srow)
+        return box
+
+    def _fill_offers():
+        offers = state_cell.get("offers")
+        while (child := offers_box.get_first_child()) is not None:
+            offers_box.remove(child)
+        if offers is None:
+            lbl = Gtk.Label(label="Checking what might need "
+                                  "your hands…")
+            lbl.set_xalign(0)
+            lbl.set_margin_start(12)
+            offers_box.append(lbl)
+        elif not offers:
+            lbl = Gtk.Label(label="Nothing needs your hands "
+                                  "right now ✓")
+            lbl.set_xalign(0)
+            lbl.set_margin_start(12)
+            offers_box.append(lbl)
+        else:
+            for offer in offers:
+                offers_box.append(_offer_row(offer))
+        return False
+
+    def _detect_offers():
+        try:
+            state_cell["offers"] = offers_mod.detect()
+        except Exception:
+            state_cell["offers"] = []
+        GLib.idle_add(_fill_offers)
+        try:
+            st = state_cell.get("state")
+            if st is not None and "nodes" in populates:
+                GLib.idle_add(lambda: populates["nodes"](st)
+                              or False)
+        except Exception:
+            pass
+    threading.Thread(target=_detect_offers, daemon=True).start()
 
     # The privilege agreement — three levels, the user's choice,
     # changeable any time (Zak, 2026-11-18). Default observer:
@@ -753,7 +873,6 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
     reach_status.set_wrap(True)
     reach_status.set_margin_start(12)
     nodes_box.append(reach_status)
-    state_cell = {}
 
     def on_reach_toggle(sw, _p, row):
         on = sw.get_active()
@@ -830,6 +949,22 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
             det.set_wrap(True)
             texts.append(lab)
             texts.append(det)
+            # A linking step only the user can run rides
+            # along with its row (command-offering layer).
+            offer = offers_mod.for_reach(
+                state_cell.get("offers"), row["id"])
+            if offer is not None:
+                off = Gtk.Label(
+                    label="Only you can link this one — run:")
+                off.set_xalign(0)
+                off.set_wrap(True)
+                texts.append(off)
+                for cmd in offer["commands"]:
+                    c = Gtk.Label(label=cmd)
+                    c.set_xalign(0)
+                    c.set_selectable(True)
+                    c.add_css_class("monospace")
+                    texts.append(c)
             rbox.append(sw)
             rbox.append(texts)
             reach_box.append(rbox)
@@ -848,7 +983,8 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
 
     def render_faq(items):
         faq_buf.set_text(HELP_INTRO + "\n" + "\n\n".join(
-            f"Q: {q}\nA: {a}" for q, a in items))
+            f"Q: {q}\nA: {a}" for q, a in items)
+            + "\n\n" + offers_mod.library_text())
     render_faq(FAQ)
     search.connect("search-changed",
                    lambda e: render_faq(faq_filter(e.get_text())))
