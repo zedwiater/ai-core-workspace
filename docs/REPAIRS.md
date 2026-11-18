@@ -147,6 +147,32 @@ work from that; from the shell, `journalctl -xb` tells the story.
 This is an OS-level event, not an app state: remove the app from
 a TTY (universal rescue) only after the machine boots stably.
 
+## R11 — The window has no titlebar: can't move it, no X to close it, sizing is weird
+
+**Symptom.** The app opens but there is nothing to drag and no
+close button; the window size looks wrong.
+
+**Cause (proven from the source).** The client set the notebook
+as the window's content and never built a header bar. GTK 4 on
+Wayland draws no server-side decorations to fall back on, so
+the window had no drag surface and no controls. The sizing
+half: a non-scrollable thirteen-tab notebook and pages that
+propagate their natural size forced a minimum the window then
+had to wear.
+
+**Repair.** Update — the window now carries a real header bar
+(title, window controls, drag surface) via a toolbar view,
+the notebook scrolls its tabs, and the pages no longer force
+their natural size onto the window:
+
+```
+cd ~/ai-core-workspace && git pull && bash update.sh
+```
+
+**Prevention.** The chrome is pinned by tests
+(`tests/test_window_chrome.py`): the header-bar construction
+and the sizing guards must be present in the source.
+
 ## Reporting any failure
 
 `ai-core-report` builds one redacted file
