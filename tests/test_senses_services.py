@@ -158,15 +158,49 @@ class SoundHonestyTests(unittest.TestCase):
         self.assertEqual(inputs[2], ("alsa", "hw:0"))
 
     def test_capture_walks_the_chain(self):
+        import struct as _struct
+        import wave as _wave
+
+        def write_wav(path, amp):
+            with _wave.open(path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(_struct.pack(
+                    "<1600h", *([amp] * 1600)))
+
         def runner(cmd, **kw):
             class R:
                 returncode = 1
                 stderr = "Input/output error"
             if cmd[3] == "alsa" and cmd[5] == "default":
-                with open(cmd[-1], "wb") as f:
-                    f.write(b"x" * 2048)
+                write_wav(cmd[-1], 3000)
                 R.returncode = 0
                 R.stderr = ""
+            return R()
+        path, err, used = sound.capture_clip(1, runner=runner)
+        self.assertIsNone(err)
+        self.assertEqual(used, "alsa:default")
+        os.remove(path)
+
+    def test_silent_capture_does_not_end_the_walk(self):
+        import struct as _struct
+        import wave as _wave
+
+        def write_wav(path, amp):
+            with _wave.open(path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(_struct.pack(
+                    "<1600h", *([amp] * 1600)))
+
+        def runner(cmd, **kw):
+            class R:
+                returncode = 0
+                stderr = ""
+            # pulse records digital silence; alsa default hears
+            write_wav(cmd[-1], 0 if cmd[3] == "pulse" else 2500)
             return R()
         path, err, used = sound.capture_clip(1, runner=runner)
         self.assertIsNone(err)

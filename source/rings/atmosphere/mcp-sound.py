@@ -84,29 +84,51 @@ def capture_inputs(sys_root="/sys/class/sound"):
 
 def capture_clip(seconds=2, runner=subprocess.run):
     """Record a short clip from the microphone, walking the
-    candidate inputs until one yields audio. Returns
+    candidate inputs until one yields actual SOUND. Returns
     (path, error, input_used): on success error is None and
     input_used names the winner. The first version swallowed
     every failure into an empty string — a broken ffmpeg read
     as 'nothing heard' for a whole evening (2026-11-18).
-    Failures now NAME themselves, all of them."""
+    Failures now NAME themselves, all of them.
+
+    Two traps this walk avoids (both hit live, 2026-11-18):
+    a system service has no session environment, so the
+    pulse input needs XDG_RUNTIME_DIR pointed at the user's
+    runtime dir or it cannot find the sound server at all;
+    and a raw hardware device can 'succeed' with digital
+    silence (-120 dB — an unrouted SOF path), so a silent
+    file does not end the walk, it just gets noted."""
     clip = f"/tmp/george_listen_{int(time.time())}.wav"
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR",
+                   f"/run/user/{os.getuid()}")
     failures = []
+    silent = None
     for fmt, dev in capture_inputs():
+        try:
+            os.remove(clip)
+        except OSError:
+            pass
         try:
             r = runner([
                 "ffmpeg", "-y", "-f", fmt, "-i", dev,
                 "-t", str(seconds), "-acodec", "pcm_s16le",
                 "-ar", "16000", "-ac", "1", clip
-            ], capture_output=True, text=True, timeout=15)
+            ], capture_output=True, text=True,
+                timeout=seconds + 6, env=env)
         except Exception as e:
             failures.append(f"{fmt}:{dev}: could not run: {e}")
             continue
         if os.path.exists(clip) and os.path.getsize(clip) > 1000:
+            if clip_level_db(clip) == -120.0:
+                silent = (clip, f"{fmt}:{dev}")
+                continue
             return clip, None, f"{fmt}:{dev}"
         tail = (r.stderr or "").strip().splitlines()
         why = tail[-1] if tail else f"ffmpeg exited {r.returncode}"
         failures.append(f"{fmt}:{dev}: {why}")
+    if silent:
+        return silent[0], None, silent[1] + " (digital silence)"
     return None, ("microphone capture failed — "
                   + "; ".join(failures)), None
 
@@ -171,6 +193,13 @@ def check_microphone(seconds=2):
         level = clip_level_db(clip)
         text = transcribe(clip)
         if text is None:
+            if "digital silence" in (used or ""):
+                return None, (f"every microphone path recorded "
+                              f"only digital silence (last: "
+                              f"{used}) — the input is likely "
+                              f"muted or unrouted on this "
+                              f"machine, and no speech-to-text "
+                              f"is installed")
             return None, (f"the microphone works (recorded via "
                           f"{used} at {level} dB) but no "
                           f"speech-to-text is installed on this "

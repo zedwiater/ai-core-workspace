@@ -63,23 +63,35 @@ def cache_dir():
     return d
 
 
+def _camera_parts(camera):
+    """(device, name) from a census dict OR a bare device
+    string. The error path once indexed the argument as a
+    dict while handling its own failure — 'never raises'
+    has to hold for the argument's shape too."""
+    if isinstance(camera, dict):
+        return (camera.get("device", ""),
+                camera.get("name", "the camera"))
+    return str(camera), str(camera)
+
+
 def camera_still(camera, out_dir=None, runner=subprocess.run):
     """One frame from the camera. (ok, line); never raises."""
     if not shutil.which("ffmpeg"):
         return False, ("ffmpeg isn't installed, so the camera "
                        "can't be read yet — that's the missing "
                        "piece, not the camera")
+    device, name = _camera_parts(camera)
     path = os.path.join(out_dir or cache_dir(), "quick-camera.jpg")
     try:
         r = runner(["ffmpeg", "-y", "-f", "v4l2", "-i",
-                    camera["device"], "-frames:v", "1", path],
+                    device, "-frames:v", "1", path],
                    capture_output=True, timeout=25)
     except Exception as e:
-        return False, f"reading {camera['name']} failed: {e}"
+        return False, f"reading {name} failed: {e}"
     if getattr(r, "returncode", 1) == 0 and os.path.exists(path):
-        return True, (f"📷 {camera['name']} — a frame is saved "
+        return True, (f"📷 {name} — a frame is saved "
                       f"at {path}")
-    return False, (f"{camera['name']} didn't give a frame — it "
+    return False, (f"{name} didn't give a frame — it "
                    f"may be busy in another app")
 
 
@@ -92,15 +104,16 @@ def camera_clip(camera, seconds=300, out_dir=None,
     stamp = time.strftime("%Y%m%d-%H%M%S")
     path = os.path.join(out_dir or cache_dir(),
                         f"quick-clip-{stamp}.mp4")
+    device, name = _camera_parts(camera)
     try:
-        popen(["ffmpeg", "-y", "-f", "v4l2", "-i", camera["device"],
+        popen(["ffmpeg", "-y", "-f", "v4l2", "-i", device,
                "-t", str(seconds), path],
               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
               start_new_session=True)
     except Exception as e:
         return False, f"starting the clip failed: {e}"
     return True, (f"🎞️ Recording {seconds // 60} minutes from "
-                  f"{camera['name']} → {path} (in the background)")
+                  f"{name} → {path} (in the background)")
 
 
 def system_status(host, threads, ram_free_gb, disk_free_gb,

@@ -88,6 +88,23 @@ class CameraTests(unittest.TestCase):
 
 
 class CompositionTests(unittest.TestCase):
+    def test_still_accepts_a_bare_device_string(self):
+        # The 'never raises' promise covers the argument's
+        # shape: a plain device path works, and a runner
+        # failure returns a line instead of raising.
+        class R:
+            returncode = 1
+        ok, line = qa.camera_still("/dev/video9",
+                                   runner=lambda *a, **k: R())
+        self.assertFalse(ok)
+        self.assertIn("/dev/video9", line)
+
+        def boom(*a, **k):
+            raise RuntimeError("no such device")
+        ok, line = qa.camera_still("/dev/video9", runner=boom)
+        self.assertFalse(ok)
+        self.assertIn("no such device", line)
+
     def test_status_lines(self):
         lines = qa.system_status("lap", 4, 3.1, 35, ["qwen2.5:3b"],
                                  "8 of 8 MCP services answering")
