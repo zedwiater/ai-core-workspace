@@ -133,10 +133,20 @@ if [ -n "$OWNER_DROPINS" ]; then
     echo "   The app will use your model door as found."
 elif [ ! -f "$DROPIN_DIR/ai-core.conf" ]; then
     mkdir -p "$DROPIN_DIR"
+    # The service shape is paired to the aptitude too: on a small
+    # machine a resident-forever model with parallel seats is how a
+    # laptop locks up (reference laptop, 2026-11-17). Small shape:
+    # one seat, models unload after 5 idle minutes.
+    if [ "$TOTAL_RAM_GB" -lt 12 ]; then
+        NUM_PARALLEL=1; KEEP_ALIVE="5m"
+        echo "🧩 Small-machine service shape: one seat at a time, models unload when idle."
+    else
+        NUM_PARALLEL=2; KEEP_ALIVE="-1"
+    fi
     {
         echo "[Service]"
-        echo 'Environment="OLLAMA_NUM_PARALLEL=2"'
-        echo 'Environment="OLLAMA_KEEP_ALIVE=-1"'
+        echo "Environment=\"OLLAMA_NUM_PARALLEL=$NUM_PARALLEL\""
+        echo "Environment=\"OLLAMA_KEEP_ALIVE=$KEEP_ALIVE\""
         if [ "$GPU_VENDOR" = "NVIDIA" ]; then
             echo 'Environment="CUDA_VISIBLE_DEVICES=0"'
         elif [ "$GPU_VENDOR" = "AMD" ]; then
