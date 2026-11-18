@@ -159,10 +159,17 @@ class AIClient(Adw.Application):
 
         self.win = Adw.ApplicationWindow(application=app)
         self.win.set_title("AI Core Workspace")
-        self.win.set_default_size(1050, 720)
+        self.win.set_default_size(900, 660)
 
         self.cfg = self._load_config()
         self.available_models = self._fetch_models()
+        # Sizes + free memory, for defaults and labels that mean
+        # something (a bare name in the picker 'means nothing').
+        try:
+            self.model_sizes = model_stacks.discover_sizes()
+            self.mem_avail_gb = model_stacks.mem_available_gb()
+        except Exception:
+            self.model_sizes, self.mem_avail_gb = {}, 0.0
         if self.available_models:
             self.model = self.available_models[0]
 
@@ -192,13 +199,21 @@ class AIClient(Adw.Application):
         self.stacks = model_stacks.load_stacks(config_model=self.model)
         self.poll_seconds = self.options.indicator_seconds()
         self._apply_tooltip_timeout()
-        # If the chat stack's top is an Ollama model we have, the
-        # header picker starts there — the stack is the truth.
+        # The default voice (Zak, 2026-11-18): the app sets
+        # ITSELF as the default model — ai-core-talking first,
+        # then the stack's standing top, then the largest model
+        # that fits. Never a model this machine cannot seat
+        # while a fitting one exists.
+        _stack_top = None
         if self.stacks["chat"]:
-            top = self.stacks["chat"][0]
-            if top.get("kind") == "ollama" \
-                    and top["model"] in self.available_models:
-                self.model = top["model"]
+            _t = self.stacks["chat"][0]
+            if _t.get("kind") == "ollama":
+                _stack_top = _t.get("model")
+        _picked = model_stacks.pick_default_model(
+            self.available_models, self.model_sizes,
+            self.mem_avail_gb, stack_top=_stack_top)
+        if _picked:
+            self.model = _picked
 
         main_pane = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         chat_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -207,7 +222,10 @@ class AIClient(Adw.Application):
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         header.set_margin_top(8); header.set_margin_bottom(8); header.set_margin_start(12); header.set_margin_end(12)
 
-        self.model_store = Gtk.StringList.new(self.available_models)
+        self.model_store = Gtk.StringList.new(
+            [model_stacks.model_label(n, self.model_sizes,
+                                      self.mem_avail_gb)
+             for n in self.available_models])
         self.model_dropdown = Gtk.DropDown(model=self.model_store)
         if self.model in self.available_models:
             self.model_dropdown.set_selected(
