@@ -18,6 +18,15 @@ class TestClientSource(unittest.TestCase):
         self.assertIn("client.lock", open(SRC).read())
         self.assertIn("LOCK_NB", open(SRC).read())
 
+    def test_installer_defines_real_home_before_uninstall(self):
+        # The uninstall block spends $REAL_HOME; under set -u a
+        # definition that arrives later crashes the uninstall
+        # itself (reference laptop, 2026-11-17).
+        path = os.path.join(os.path.dirname(__file__), "..", "install.sh")
+        text = open(path).read()
+        self.assertLess(text.index('REAL_HOME=$(getent passwd'),
+                        text.index('# --- UNINSTALL ---'))
+
     def test_installer_no_longer_autostarts_by_default(self):
         path = os.path.join(os.path.dirname(__file__), "..", "install.sh")
         text = open(path).read()

@@ -18,6 +18,13 @@ MCP_NODES=("files" "web" "vision" "shell" "sound" "voice" "coding" "memory")
 # source/rings/ (see docs/GEOMETRIC_NESTING.md). Names/ports unchanged.
 declare -A MCP_RING=( [files]=actuation [shell]=actuation [memory]=state [coding]=state [web]=atmosphere [vision]=atmosphere [sound]=atmosphere [voice]=atmosphere )
 
+# Who the install is FOR — computed before every mode, uninstall
+# included: the uninstall block uses $REAL_HOME, and under set -u
+# the late definition crashed the uninstall itself on line 32
+# before it removed anything (reference laptop, 2026-11-17).
+REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "$USER")}"
+REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+
 # --- UNINSTALL ---
 if [[ "${1:-}" == "uninstall" ]]; then
     echo "🗑️ Uninstalling AI Core..."
@@ -40,13 +47,11 @@ if [[ "${1:-}" == "uninstall" ]]; then
 fi
 
 # --- PRIVILEGE CHECK ---
+# (REAL_USER/REAL_HOME are defined above the uninstall block.)
 if [[ $EUID -ne 0 ]]; then
    echo "⚠️ Administrative privileges required. Re-routing via sudo..."
    exec sudo bash "$0" "$@"
 fi
-
-REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "$USER")}"
-REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 
 # Work from the installer's own directory: every step below uses
 # repo-relative paths, and a launch from elsewhere must not die
