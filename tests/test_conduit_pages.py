@@ -84,6 +84,14 @@ class TestModelAdvice(unittest.TestCase):
         self.assertEqual(a["state"], "keep")
         self.assertEqual(a["resident"], "george-14")
 
+    def test_custom_shelf_names_by_class(self):
+        # The reference shelf: a custom 14B beside a stock 8B — the
+        # custom model is the resident pick and earns KEEP.
+        a = cp.model_advice(fake_crawl(), [{"name": "george-14:latest"},
+                                           {"name": "qwen3:8b"}])
+        self.assertEqual(a["state"], "keep")
+        self.assertEqual(a["resident"], "george-14:latest")
+
     def test_small_resident_gets_upgrade_advice(self):
         a = cp.model_advice(fake_crawl(), [{"name": "qwen2.5:3b"}])
         self.assertEqual(a["state"], "upgrade")

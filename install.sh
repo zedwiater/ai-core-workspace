@@ -75,34 +75,74 @@ if lspci | grep -qi "nvidia"; then GPU_VENDOR="NVIDIA"; echo "🚀 NVIDIA GPU"
 elif lspci | grep -qi "amd\|ati"; then GPU_VENDOR="AMD"; echo "🔮 AMD GPU"
 fi
 
-echo "🦙 Step 4: Ollama setup..."
+echo "🦙 Step 4: Ollama — merging with what's here, never overwriting it..."
+DROPIN_DIR="/etc/systemd/system/ollama.service.d"
+APP_ENV_CHANGED=false
 if ! command -v ollama &>/dev/null; then
     echo "📥 Installing Ollama..."
     su - "$REAL_USER" -c "curl -fsSL https://ollama.com/install.sh | sh" || true
 fi
 
-mkdir -p /etc/systemd/system/ollama.service.d/
-cat << OLL_ENV_EOF > /etc/systemd/system/ollama.service.d/override.conf
-[Service]
-Environment="OLLAMA_NUM_PARALLEL=2"
-Environment="OLLAMA_KEEP_ALIVE=-1"
-OLL_ENV_EOF
-
-if [ "$GPU_VENDOR" = "NVIDIA" ]; then
-    echo 'Environment="CUDA_VISIBLE_DEVICES=0"' >> /etc/systemd/system/ollama.service.d/override.conf
-elif [ "$GPU_VENDOR" = "AMD" ]; then
-    echo 'Environment="HSA_OVERRIDE_GFX_VERSION=10.3.0"' >> /etc/systemd/system/ollama.service.d/override.conf
+# An owner-tuned Ollama (any drop-in of theirs) is merged with, not
+# overwritten: their environment, their models path, their seats.
+# The app writes only its OWN drop-in file, and only when the owner
+# has none — and it never restarts a running door over nothing.
+OWNER_DROPINS=$(ls "$DROPIN_DIR" 2>/dev/null | grep -v '^ai-core\.conf$' || true)
+if [ -n "$OWNER_DROPINS" ]; then
+    echo "🔒 Merge mode: found your Ollama configuration ($(echo $OWNER_DROPINS | tr '\n' ' '))."
+    echo "   Kept exactly as-is — nothing written, nothing restarted."
+    echo "   The app will use your model door as found."
+elif [ ! -f "$DROPIN_DIR/ai-core.conf" ]; then
+    mkdir -p "$DROPIN_DIR"
+    {
+        echo "[Service]"
+        echo 'Environment="OLLAMA_NUM_PARALLEL=2"'
+        echo 'Environment="OLLAMA_KEEP_ALIVE=-1"'
+        if [ "$GPU_VENDOR" = "NVIDIA" ]; then
+            echo 'Environment="CUDA_VISIBLE_DEVICES=0"'
+        elif [ "$GPU_VENDOR" = "AMD" ]; then
+            echo 'Environment="HSA_OVERRIDE_GFX_VERSION=10.3.0"'
+        fi
+    } > "$DROPIN_DIR/ai-core.conf"
+    APP_ENV_CHANGED=true
+    echo "🧩 Wrote the app's own drop-in (ai-core.conf) — your files untouched."
 fi
 
 systemctl daemon-reload
-systemctl enable ollama.service --now || true
-systemctl restart ollama.service || true
-sleep 3
+if ! systemctl is-active --quiet ollama.service; then
+    systemctl enable ollama.service --now || true
+    sleep 3
+elif $APP_ENV_CHANGED; then
+    echo "🔄 Restarting Ollama once so the app's drop-in takes effect..."
+    systemctl restart ollama.service || true
+    sleep 3
+fi
 
-# Validate Ollama
+# The shelf decides: existing models are kept, never pulled over.
+# The app's factory default becomes the resident pick on this machine.
+SED_MODEL="$OPTIMAL_MODEL"
 if curl -s http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
     echo "✅ Ollama API responding"
-    su - "$REAL_USER" -c "ollama pull $OPTIMAL_MODEL 2>/dev/null" || echo "⚠️ Model pull deferred (run: ollama pull $OPTIMAL_MODEL)"
+    TAGS_JSON=$(curl -s http://127.0.0.1:11434/api/tags)
+    EXISTING_MODELS=$(echo "$TAGS_JSON" | python3 -c "import json,sys; print(' '.join(m['name'] for m in json.load(sys.stdin).get('models', [])))" 2>/dev/null || true)
+    if [ -n "$EXISTING_MODELS" ]; then
+        echo "📚 Models already on this machine: $EXISTING_MODELS"
+        echo "   Nothing pulled. On first launch the app checks this shelf"
+        echo "   and advises — keep yours, or take the fit ($OPTIMAL_MODEL)."
+        PICK=$(echo "$TAGS_JSON" | python3 -c "
+import json, re, sys
+def p(n):
+    m = re.search(r'(\d+(?:\.\d+)?)\s*b\b', n.lower())
+    if m: return float(m.group(1))
+    m = re.search(r'-(\d+(?:\.\d+)?)\b', n.lower())
+    return float(m.group(1)) if m else 0
+names = [m['name'] for m in json.load(sys.stdin).get('models', [])]
+print(sorted(names, key=p, reverse=True)[0] if names else '')" 2>/dev/null || true)
+        [ -n "$PICK" ] && SED_MODEL="$PICK"
+    else
+        echo "📥 Empty shelf — pulling the fitted model: $OPTIMAL_MODEL"
+        su - "$REAL_USER" -c "ollama pull $OPTIMAL_MODEL 2>/dev/null" || echo "⚠️ Model pull deferred (run: ollama pull $OPTIMAL_MODEL)"
+    fi
 else
     echo "⚠️ Ollama not responding. Install may need manual intervention."
     echo "   Check: journalctl -u ollama -n 20"
@@ -160,8 +200,8 @@ cp -r source/app/* "$TARGET_DIR/app/"
 cp source/config.json "$TARGET_DIR/config.json" 2>/dev/null || true
 chmod +x "$TARGET_DIR/app/ai-client.py"
 
-sed -i "s/self.model = \"qwen3.5:9b\"/self.model = \"$OPTIMAL_MODEL\"/g" "$TARGET_DIR/app/ai-client.py"
-sed -i "s/return \[\".*:9b\"\]/return [\"$OPTIMAL_MODEL\"]/g" "$TARGET_DIR/app/ai-client.py"
+sed -i "s/self.model = \"qwen3.5:9b\"/self.model = \"$SED_MODEL\"/g" "$TARGET_DIR/app/ai-client.py"
+sed -i "s/return \[\".*:9b\"\]/return [\"$SED_MODEL\"]/g" "$TARGET_DIR/app/ai-client.py"
 
 echo "⚙️ Step 6: MCP services..."
 for name in "${MCP_NODES[@]}"; do
@@ -238,7 +278,7 @@ echo "📋 Quick reference:"
 echo "   Run:   ai-client"
 echo "   Logs:  journalctl -u ai-mcp-shell -f"
 echo "   MCP:   nc 127.0.0.1 9104 <<< '{\"action\":\"ping\"}'"
-echo "   Pull model: ollama pull $OPTIMAL_MODEL"
+echo "   Model: the app checks your shelf on first launch and advises — you decide."
 echo "   Uninstall:  sudo ./install.sh uninstall"
 echo ""
 echo "💾 Backup suggestion:"

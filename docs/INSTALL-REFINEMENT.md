@@ -81,3 +81,12 @@ truth. On launch, `ai-client` opens on the **Conduit landing**
 Gradient, Nodes, Dwell, Roam Watch and Help & Support tabs beside
 the chat. The landing is the crawl, rendered by
 source/app/conduit_pages.py from the same core modules.
+
+## Installer merge semantics (2026-11-17, Zak's order)
+
+The installer merges with a tuned system instead of overwriting it:
+an owner Ollama drop-in means merge mode (nothing written, nothing
+restarted, nothing pulled); otherwise the app writes only its own
+ai-core.conf drop-in. Existing models are never pulled over — the
+shelf decides the app's factory default, and the keep/upgrade advice
+is a first-launch popup (conduit_pages.model_advice).

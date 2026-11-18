@@ -524,7 +524,8 @@ def _params_b(name):
     m = re.search(r"(\d+(?:\.\d+)?)\s*b\b", (name or "").lower())
     if m:
         return float(m.group(1))
-    m = re.search(r"-(\d+(?:\.\d+)?)$", (name or "").lower())
+    # Custom shelves name by class: george-14, george-14:latest.
+    m = re.search(r"-(\d+(?:\.\d+)?)\b", (name or "").lower())
     return float(m.group(1)) if m else None
 
 def fitted_model(ram_mb):
