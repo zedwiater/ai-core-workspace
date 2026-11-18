@@ -22,6 +22,7 @@ from core.settings import Options
 from core import learn as learn_mod
 from core import models as model_stacks
 from core import census as census_mod
+from core import agreement as agreement_mod
 from core import quick_actions
 from core import websearch as websearch_mod
 from core import toy as toy_mod
@@ -348,11 +349,14 @@ class AIClient(Adw.Application):
         # crawl, rendered — greeting, map and options first; the chat
         # is one door among them. Guarded: a conduit failure must
         # never take the client down with it.
+        self.agreement_level = "observer"
         try:
             import conduit_pages
+            self.agreement_level = conduit_pages.load_agreement()
             conduit_pages.attach(self.notebook,
                                  on_model_choice=self._apply_conduit_model,
-                                 on_comfort=self._apply_conduit_comfort)
+                                 on_comfort=self._apply_conduit_comfort,
+                                 on_agreement=self._apply_agreement)
         except Exception:
             pass
         self.notebook.connect("switch-page", self._on_page_switch)
@@ -2185,6 +2189,12 @@ class AIClient(Adw.Application):
             GLib.source_remove(self.toy_source)
             self.toy_source = None
 
+    def _apply_agreement(self, level):
+        """The Conduit landing's agreement choice lands here; the
+        tool gate reads it on every call, so dropping back takes
+        effect immediately."""
+        self.agreement_level = level
+
     def _apply_conduit_comfort(self, gradient):
         """One dial, not two: the Joy Gradient choice also sets the
         chat's standing patience, so the promise on the gradient
@@ -2382,6 +2392,15 @@ class AIClient(Adw.Application):
         threading.Thread(target=work, daemon=True).start()
 
     def _on_quick(self, btn, action_id):
+        # Quick actions ride at Connected (they run local organs);
+        # status and web stay available under Observer.
+        cap = {"camera": "quick", "grab5": "quick",
+               "say": "quick"}.get(action_id)
+        level = getattr(self, "agreement_level", "observer")
+        if cap and not agreement_mod.allows(level, cap):
+            self.append_bubble(agreement_mod.refusal(level, cap),
+                               "system")
+            return
         if action_id in ("camera", "grab5"):
             cams = self._quick_cameras()
             if not cams:
@@ -2607,6 +2626,21 @@ class AIClient(Adw.Application):
                     and not self.options.sense_live(svc):
                 return (f"{svc} organ is off — Options → "
                         f"Senses; the floor still checks it")
+        # Agreement gate (Zak, 2026-11-18): what the app may do
+        # is the user's stated agreement, enforced on every tool
+        # call — shell and file writes/deletes need All; service
+        # calls need Connected; Observer is chat + search only.
+        if is_tool_call(tool_string.strip()):
+            try:
+                svc, action, _params = parse_tool_token(
+                    tool_string.strip())
+            except Exception:
+                svc, action = None, ""
+            if svc in SERVICE_PORTS:
+                cap = agreement_mod.gate_for_tool(svc, action)
+                level = getattr(self, "agreement_level", "observer")
+                if not agreement_mod.allows(level, cap):
+                    return agreement_mod.refusal(level, cap)
         return execute_tool_payload(tool_string)
 
     def _monitor_services(self):
