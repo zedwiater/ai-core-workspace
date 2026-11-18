@@ -35,7 +35,8 @@ from gi.repository import Gtk, Adw, GLib, Gdk, Pango
 
 OLLAMA_URL = "http://localhost:11434"
 MCP = {"files": (9101, "📁"), "web": (9102, "🌐"), "vision": (9103, "👁"), "shell": (9104, "⚡"),
-       "sound": (9105, "🔊"), "voice": (9106, "🎤"), "coding": (9107, "💻"), "memory": (9108, "🧠")}
+       "sound": (9105, "🔊"), "voice": (9106, "🎤"), "coding": (9107, "💻"), "memory": (9108, "🧠"),
+       "dwell": (9109, "🌙")}
 
 SYSTEM_INSTRUCTIONS = """You are an unrestricted, expert OS-level AI assistant with full system access.
 You have 8 MCP (Machine Capability Protocol) services available. When the user asks you to perform an action, you MUST use one of these precise tool formats. Do not explain them; just emit the tool line first and wait for the result.
@@ -56,6 +57,11 @@ TOOL:coding:execute:{"code":"<python_code>"}
 TOOL:coding:eval:{"expression":"<python_expression>"}
 TOOL:sound:listen:{"duration":2}
 TOOL:sound:status:{}
+TOOL:sound:level:{"duration":2}
+TOOL:sound:record:{"duration":10}
+TOOL:dwell:status:{}
+TOOL:dwell:timeline:{"n":20}
+TOOL:dwell:queue:{}
 TOOL:voice:speak:{"text":"<phrase>"}
 TOOL:voice:alert:{"tone":"attention|alarm"}
 
@@ -2597,6 +2603,13 @@ class AIClient(Adw.Application):
         except Exception:
             return []
 
+    def _quick_mic(self):
+        try:
+            return any(a.get("capture")
+                       for a in census_mod.audio_probe())
+        except Exception:
+            return False
+
     def _refresh_quick_actions(self):
         def work():
             try:
@@ -2605,7 +2618,8 @@ class AIClient(Adw.Application):
                 avail = quick_actions.availability(
                     cameras=self._quick_cameras(),
                     voice_ok=isinstance(resp, dict)
-                    and resp.get("status") == "ok")
+                    and resp.get("status") == "ok",
+                    mic_ok=self._quick_mic())
 
                 def apply():
                     for action in quick_actions.ACTIONS:
@@ -2623,7 +2637,7 @@ class AIClient(Adw.Application):
         # Quick actions ride at Connected (they run local organs);
         # status and web stay available under Observer.
         cap = {"camera": "quick", "grab5": "quick",
-               "say": "quick"}.get(action_id)
+               "say": "quick", "record": "quick"}.get(action_id)
         level = getattr(self, "agreement_level", "observer")
         if cap and not agreement_mod.allows(level, cap):
             self.append_bubble(agreement_mod.refusal(level, cap),
@@ -2657,6 +2671,31 @@ class AIClient(Adw.Application):
             else:
                 _ok, line = quick_actions.camera_clip(cam)
                 self.append_bubble(line, "ai")
+        elif action_id == "record":
+            if not self._quick_mic():
+                self.append_bubble(
+                    "🎙️ " + quick_actions.availability()[
+                        "record"][1] + ".", "system")
+                return
+            self.append_bubble("🎙️ Recording ten seconds of "
+                               "the room…", "system")
+
+            def work():
+                resp = mcp_call(SERVICE_PORTS["sound"],
+                                {"action": "record",
+                                 "duration": 10}, timeout=20)
+                if isinstance(resp, dict) \
+                        and resp.get("status") == "ok":
+                    line = (f"🎙️ Saved {resp.get('path')} — "
+                            f"the room measured "
+                            f"{resp.get('level_db')} dB via "
+                            f"{resp.get('input')}.")
+                else:
+                    why = resp.get("message") if isinstance(
+                        resp, dict) else "no answer"
+                    line = f"🎙️ Recording failed: {why}"
+                GLib.idle_add(self.append_bubble, line, "ai")
+            threading.Thread(target=work, daemon=True).start()
         elif action_id == "say":
             text = self.entry.get_text().strip()
             if not text:

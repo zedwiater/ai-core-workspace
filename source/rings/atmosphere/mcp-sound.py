@@ -98,17 +98,17 @@ def capture_clip(seconds=2, runner=subprocess.run):
     and a raw hardware device can 'succeed' with digital
     silence (-120 dB — an unrouted SOF path), so a silent
     file does not end the walk, it just gets noted."""
-    clip = f"/tmp/george_listen_{int(time.time())}.wav"
     env = dict(os.environ)
     env.setdefault("XDG_RUNTIME_DIR",
                    f"/run/user/{os.getuid()}")
     failures = []
     silent = None
-    for fmt, dev in capture_inputs():
-        try:
-            os.remove(clip)
-        except OSError:
-            pass
+    stamp = int(time.time())
+    for i, (fmt, dev) in enumerate(capture_inputs()):
+        # one file per candidate: sharing a path meant a later
+        # attempt deleted an earlier silent keeper, and the
+        # caller was handed a path that no longer existed
+        clip = f"/tmp/george_listen_{stamp}_{i}.wav"
         try:
             r = runner([
                 "ffmpeg", "-y", "-f", fmt, "-i", dev,
@@ -123,10 +123,19 @@ def capture_clip(seconds=2, runner=subprocess.run):
             if clip_level_db(clip) == -120.0:
                 silent = (clip, f"{fmt}:{dev}")
                 continue
+            if silent:
+                try:
+                    os.remove(silent[0])
+                except OSError:
+                    pass
             return clip, None, f"{fmt}:{dev}"
         tail = (r.stderr or "").strip().splitlines()
         why = tail[-1] if tail else f"ffmpeg exited {r.returncode}"
         failures.append(f"{fmt}:{dev}: {why}")
+        try:
+            os.remove(clip)
+        except OSError:
+            pass
     if silent:
         return silent[0], None, silent[1] + " (digital silence)"
     return None, ("microphone capture failed — "
@@ -213,6 +222,49 @@ def check_microphone(seconds=2):
             pass
 
 
+def level(req):
+    """Just the room's loudness, honestly measured — the
+    dwell loop's ear sample. No transcription attempted."""
+    clip, err, used = capture_clip(req.get("duration", 2))
+    if err:
+        return {"status": "error", "message": err}
+    try:
+        db = clip_level_db(clip)
+        if db is None:
+            return {"status": "error",
+                    "message": f"the capture from {used} held "
+                               f"no measurable audio"}
+        return {"status": "ok", "level_db": db, "input": used,
+                "silent": db == -120.0}
+    finally:
+        try:
+            os.remove(clip)
+        except OSError:
+            pass
+
+
+def record(req):
+    """Record a clip and KEEP it — the 🎙️ action's other
+    half. Returns the path and the measured level."""
+    seconds = int(req.get("duration", 10))
+    clip, err, used = capture_clip(seconds)
+    if err:
+        return {"status": "error", "message": err}
+    out_dir = os.path.expanduser("~/.cache/ai-core/recordings")
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(
+        out_dir, time.strftime("rec-%Y%m%d-%H%M%S.wav"))
+    try:
+        os.replace(clip, out)
+    except OSError:
+        import shutil
+        shutil.copyfile(clip, out)
+        os.remove(clip)
+    return {"status": "ok", "path": out,
+            "level_db": clip_level_db(out), "input": used,
+            "seconds": seconds}
+
+
 def ping(req):
     return {"status": "pong",
             "listening": capabilities()["microphone"],
@@ -285,5 +337,6 @@ def cooldown_remaining(req):
 if __name__ == "__main__":
     serve("sound", "atmosphere", PORT,
           {"ping": ping, "listen": listen, "status": status,
+           "level": level, "record": record,
            "cooldown_remaining": cooldown_remaining},
           unknown_fmt="Unknown: {action}")

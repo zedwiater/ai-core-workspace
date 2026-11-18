@@ -46,10 +46,11 @@ class TestWire(unittest.TestCase):
 
     def test_service_ports_complete(self):
         self.assertEqual(sorted(protocol.SERVICE_PORTS),
-                         ["coding", "files", "memory", "shell",
-                          "sound", "vision", "voice", "web"])
+                         ["coding", "dwell", "files", "memory",
+                          "shell", "sound", "vision", "voice",
+                          "web"])
         ports = list(protocol.SERVICE_PORTS.values())
-        self.assertEqual(len(set(ports)), 8)
+        self.assertEqual(len(set(ports)), 9)
 
 
 if __name__ == "__main__":

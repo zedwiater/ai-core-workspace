@@ -46,7 +46,7 @@ class TestSnapshot(unittest.TestCase):
         self.assertTrue(snap["aligned"])
         self.assertEqual(snap["down"], [])
         self.assertEqual(snap["mismatches"], [])
-        self.assertEqual(len(snap["up"]), 8)
+        self.assertEqual(len(snap["up"]), 9)
 
     def test_down_service_named(self):
         live = _live_all_ok()

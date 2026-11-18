@@ -13,10 +13,10 @@ echo "🧭 AI Core installer — conduit build (pairing + merge)."
 TARGET_DIR="/opt/ai-core"
 SYSTEMD_DIR="/etc/systemd/system"
 DESKTOP_DIR="/usr/share/applications"
-MCP_NODES=("files" "web" "vision" "shell" "sound" "voice" "coding" "memory")
+MCP_NODES=("files" "web" "vision" "shell" "sound" "voice" "coding" "memory" "dwell")
 # Geometrically nested layout: each service lives in its ring under
 # source/rings/ (see docs/GEOMETRIC_NESTING.md). Names/ports unchanged.
-declare -A MCP_RING=( [files]=actuation [shell]=actuation [memory]=state [coding]=state [web]=atmosphere [vision]=atmosphere [sound]=atmosphere [voice]=atmosphere )
+declare -A MCP_RING=( [files]=actuation [shell]=actuation [memory]=state [coding]=state [web]=atmosphere [vision]=atmosphere [sound]=atmosphere [voice]=atmosphere [dwell]=atmosphere )
 
 # Who the install is FOR — computed before every mode, uninstall
 # included: the uninstall block uses $REAL_HOME, and under set -u
@@ -340,6 +340,12 @@ sed -i "s/return \[\".*:9b\"\]/return [\"$SED_MODEL\"]/g" "$TARGET_DIR/app/ai-cl
 
 echo "⚙️ Step 6: MCP services..."
 for name in "${MCP_NODES[@]}"; do
+    # A service may already run as a user unit (the bridge a
+    # support session leaves behind); retire it so the system
+    # unit owns the port alone.
+    runuser -u "$REAL_USER" -- systemctl --user stop "ai-mcp-$name.service" 2>/dev/null || true
+    runuser -u "$REAL_USER" -- systemctl --user disable "ai-mcp-$name.service" 2>/dev/null || true
+    rm -f "$REAL_HOME/.config/systemd/user/ai-mcp-$name.service" 2>/dev/null || true
     cat << SVC_EOF > "$SYSTEMD_DIR/ai-mcp-$name.service"
 [Unit]
 Description=AI Core MCP ($name)
