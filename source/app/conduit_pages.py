@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from core import census as census_mod
 from core import pairing as pairing_mod
 from core import pipes as pipes_mod
+from core import agreement as agreement_mod
 
 _MODEL_POPUP_SHOWN = False
 
@@ -45,6 +46,9 @@ def crawl_now():
          "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
          "cpu": census_mod.cpu_probe(), "ram": census_mod.ram_probe(),
          "gpus": census_mod.gpu_probe(),
+         "cameras": census_mod.camera_probe(),
+         "audio": census_mod.audio_probe(),
+         "reach": census_mod.reach_probe(),
          "disk_free_gb": round(shutil.disk_usage(os.path.expanduser("~")).free / 1e9),
          "runtimes": census_mod.runtime_probe()}
     c["expectations"] = census_mod.build(c)
@@ -84,7 +88,8 @@ def greeting_lines(crawl):
              f"{round(c['ram']['effective_mb'] / 1024, 1)} GB of usable RAM, "
              f"{'a GPU (' + ', '.join(g.get('name') or (g.get('vendor', 'GPU') + ' GPU') for g in c['gpus']) + ')' if c['gpus'] else 'no GPU — models take CPU seats here'}, "
              f"{c['disk_free_gb']} GB of free disk"
-             f"{', and a camera (' + ', '.join(cam.get('name', cam.get('device', 'camera')) for cam in c.get('cameras', [])) + ')' if c.get('cameras') else ''}.",
+             f"{', and a camera (' + ', '.join(cam.get('name', cam.get('device', 'camera')) for cam in c.get('cameras', [])) + ')' if c.get('cameras') else ''}"
+             f"{', and a microphone (' + next(a['name'] for a in c.get('audio', []) if a.get('capture')) + ')' if any(a.get('capture') for a in c.get('audio', [])) else ''}.",
              f"Working budget: {budget['max_parallel_model_tasks']} model task(s) at once. "
              f"Script tasks are never seat-bound — the floor is always up."]
     conv = tiers.get("conversation", {})
@@ -420,7 +425,13 @@ def collect_state():
             "social": social, "social_path": social_path,
             "watch": watch, "watch_path": watch_path}
 
-def attach(notebook, on_model_choice=None, on_comfort=None):
+def load_agreement():
+    """The user's standing privilege agreement (core/agreement)."""
+    return agreement_mod.load(CONDUIT_JSON)
+
+
+def attach(notebook, on_model_choice=None, on_comfort=None,
+           on_agreement=None):
     """Build the Conduit pages into the client's notebook and start
     the crawl. Returns a dict of populate callbacks (already wired);
     the landing page is inserted first and selected. When
@@ -472,6 +483,55 @@ def attach(notebook, on_model_choice=None, on_comfort=None):
         row.append(sw)
         row.append(texts)
         home_box.append(row)
+
+    # The privilege agreement — three levels, the user's choice,
+    # changeable any time (Zak, 2026-11-18). Default observer:
+    # begin as chatbot + search assist, no permissions granted.
+    agr_title = Gtk.Label(label="Your agreement with this app — "
+                                "what it may do")
+    agr_title.set_xalign(0)
+    agr_title.set_margin_start(12)
+    agr_title.set_margin_top(14)
+    home_box.append(agr_title)
+    agr_blurb = Gtk.Label(label="")
+    agr_blurb.set_xalign(0)
+    agr_blurb.set_wrap(True)
+    agr_blurb.set_margin_start(12)
+    agr_blurb.set_margin_end(12)
+    agr_disc = Gtk.Label(label=agreement_mod.DISCLAIMER)
+    agr_disc.set_xalign(0)
+    agr_disc.set_wrap(True)
+    agr_disc.set_margin_start(12)
+    agr_disc.set_margin_end(12)
+    current_level = load_agreement()
+    agr_group = [None]
+
+    def agr_chosen(btn, level):
+        if not btn.get_active():
+            return
+        agreement_mod.save(CONDUIT_JSON, level)
+        lv = next(x for x in agreement_mod.LEVELS
+                  if x["id"] == level)
+        agr_blurb.set_text(lv["blurb"])
+        agr_disc.set_visible(level == "all")
+        if on_agreement is not None:
+            on_agreement(level)
+
+    for lv in agreement_mod.LEVELS:
+        abtn = Gtk.CheckButton(label=lv["name"])
+        if agr_group[0] is not None:
+            abtn.set_group(agr_group[0])
+        else:
+            agr_group[0] = abtn
+        abtn.set_margin_start(12)
+        abtn.set_active(lv["id"] == current_level)
+        abtn.connect("toggled", agr_chosen, lv["id"])
+        home_box.append(abtn)
+        if lv["id"] == current_level:
+            agr_blurb.set_text(lv["blurb"])
+            agr_disc.set_visible(lv["id"] == "all")
+    home_box.append(agr_blurb)
+    home_box.append(agr_disc)
 
     def pop_home(state):
         crawl = state["crawl"]
