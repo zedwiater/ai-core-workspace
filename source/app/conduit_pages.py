@@ -444,8 +444,40 @@ def load_agreement():
     return agreement_mod.load(CONDUIT_JSON)
 
 
+# ------------------------------------------------- first-run welcome
+
+ABOUT_FIELDS = [
+    ("call_name", "What should I call you?"),
+    ("working_on", "What are you working on lately?"),
+    ("answer_style",
+     "How do you like answers — brief, or with the reasoning?"),
+]
+
+
+def load_about():
+    return _load_conduit_json().get("about", {})
+
+
+def save_about_field(key, value):
+    data = _load_conduit_json()
+    about = data.setdefault("about", {})
+    about[key] = value
+    _save_conduit_json(data)
+    return about
+
+
+def load_welcomed():
+    return bool(_load_conduit_json().get("welcomed"))
+
+
+def save_welcomed():
+    data = _load_conduit_json()
+    data["welcomed"] = True
+    _save_conduit_json(data)
+
+
 def attach(notebook, on_model_choice=None, on_comfort=None,
-           on_agreement=None):
+           on_agreement=None, on_welcomed=None):
     """Build the Conduit pages into the client's notebook and start
     the crawl. Returns a dict of populate callbacks (already wired);
     the landing page is inserted first and selected. When
@@ -557,6 +589,64 @@ def attach(notebook, on_model_choice=None, on_comfort=None,
     for _w in [agr_title] + agr_btns + [agr_blurb, agr_disc]:
         home_box.reorder_child_after(_w, _prev)
         _prev = _w
+
+    # --- First-run welcome: the get-to-know-you card ---
+    # Setup must END somewhere (Zak, 2026-11-18: the app kept
+    # 'failing on finality of setup'). On a first run this card
+    # sits at the very top: three short questions, the
+    # permissions choice right below it, and a Done button
+    # that closes setup and starts the guided path (blinking
+    # tabs) to the chat window. Once welcomed, it never
+    # reappears.
+    welcome_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                          spacing=6)
+    welcome_box.set_margin_start(12)
+    welcome_box.set_margin_end(12)
+    welcome_box.set_margin_top(10)
+    w_title = Gtk.Label(label="Welcome — let's get to know "
+                              "one another")
+    w_title.set_xalign(0)
+    welcome_box.append(w_title)
+    w_intro = Gtk.Label(
+        label="Three quick things, then pick this app's "
+              "permissions right below — Full (All) or None "
+              "(Observer). Nothing here locks; everything can "
+              "change later.")
+    w_intro.set_xalign(0)
+    w_intro.set_wrap(True)
+    welcome_box.append(w_intro)
+    about_saved = load_about()
+    about_entries = {}
+    for key, question in ABOUT_FIELDS:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                      spacing=8)
+        q = Gtk.Label(label=question)
+        q.set_xalign(0)
+        entry = Gtk.Entry()
+        entry.set_text(about_saved.get(key, ""))
+        entry.set_hexpand(True)
+        entry.connect("activate",
+                      lambda e, k=key: save_about_field(
+                          k, e.get_text()))
+        about_entries[key] = entry
+        row.append(q)
+        row.append(entry)
+        welcome_box.append(row)
+    w_done = Gtk.Button(
+        label="Done — next: how patient should it be? →")
+
+    def _welcome_done(_b):
+        for k, e in about_entries.items():
+            save_about_field(k, e.get_text())
+        save_welcomed()
+        welcome_box.set_visible(False)
+        if on_welcomed is not None:
+            on_welcomed(load_about())
+    w_done.connect("clicked", _welcome_done)
+    welcome_box.append(w_done)
+    home_box.append(welcome_box)
+    home_box.reorder_child_after(welcome_box, None)
+    welcome_box.set_visible(not load_welcomed())
 
     def pop_home(state):
         crawl = state["crawl"]

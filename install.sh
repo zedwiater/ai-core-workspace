@@ -407,6 +407,29 @@ mkdir -p "$REAL_HOME/.config/ai-core"
 cat << STAMP_EOF > "$REAL_HOME/.config/ai-core/installed.json"
 {"commit": "$SRC_COMMIT", "src": "$SRC_DIR", "date": "$(date -Iseconds)"}
 STAMP_EOF
+# Install-time permissions (Zak, 2026-11-18): the app installs
+# with full permission or none. AI_CORE_AGREEMENT=all|observer
+# in the environment writes the choice into the app's config
+# now; unset, the standing choice is kept, and a first run asks
+# in the app itself (welcome card, top of the Conduit page).
+if [ -n "${AI_CORE_AGREEMENT:-}" ]; then
+    python3 - "$REAL_HOME/.config/ai-core/conduit.json" "$AI_CORE_AGREEMENT" <<'AGR_EOF' || true
+import json, os, sys
+path, level = sys.argv[1], sys.argv[2]
+if level not in ("observer", "connected", "all"):
+    raise SystemExit(f"unknown agreement level: {level}")
+data = {}
+if os.path.exists(path):
+    try:
+        data = json.load(open(path))
+    except Exception:
+        data = {}
+data["agreement"] = level
+json.dump(data, open(path, "w"), indent=1)
+print(f"   🔐 Install-time agreement: {level}")
+AGR_EOF
+    chown "$REAL_USER":"$REAL_USER" "$REAL_HOME/.config/ai-core/conduit.json" 2>/dev/null || true
+fi
 chown "$REAL_USER":"$REAL_USER" "$REAL_HOME/.config/ai-core/installed.json" 2>/dev/null || true
 cat << UPD_EOF > /usr/local/bin/ai-core-update
 #!/usr/bin/env bash

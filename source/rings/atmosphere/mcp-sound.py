@@ -65,26 +65,50 @@ def has_stop_word(text):
     return any(re.search(p, t) for p in STOP_WORDS)
 
 
-def capture_clip(seconds=2):
-    """Record a short clip from the default microphone.
-    Returns (path, error): exactly one of them is set. The
-    first version swallowed every failure into an empty
-    string — a broken ffmpeg read as 'nothing heard' for a
-    whole evening (2026-11-18). Failures now NAME themselves."""
+def capture_inputs(sys_root="/sys/class/sound"):
+    """Candidate capture inputs, best first. PipeWire systems
+    serve the mic through the pulse shim — raw ALSA 'default'
+    I/O-errors on SOF hardware while pulse records fine
+    (reference laptop, 2026-11-18) — so pulse leads, ALSA
+    default follows, and the first capture card's hardware
+    device is the last resort."""
+    inputs = [("pulse", "default"), ("alsa", "default")]
+    for p in sorted(glob.glob(os.path.join(sys_root, "pcm*"))):
+        base = os.path.basename(p)
+        if base.endswith("c"):
+            card = base[4:].split("D")[0]  # pcmC<card>D<dev>c
+            inputs.append(("alsa", f"hw:{card}"))
+            break
+    return inputs
+
+
+def capture_clip(seconds=2, runner=subprocess.run):
+    """Record a short clip from the microphone, walking the
+    candidate inputs until one yields audio. Returns
+    (path, error, input_used): on success error is None and
+    input_used names the winner. The first version swallowed
+    every failure into an empty string — a broken ffmpeg read
+    as 'nothing heard' for a whole evening (2026-11-18).
+    Failures now NAME themselves, all of them."""
     clip = f"/tmp/george_listen_{int(time.time())}.wav"
-    try:
-        r = subprocess.run([
-            "ffmpeg", "-y", "-f", "alsa", "-i", "default",
-            "-t", str(seconds), "-acodec", "pcm_s16le",
-            "-ar", "16000", "-ac", "1", clip
-        ], capture_output=True, text=True, timeout=15)
-    except Exception as e:
-        return None, f"capture could not run: {e}"
-    if not os.path.exists(clip) or os.path.getsize(clip) < 1000:
+    failures = []
+    for fmt, dev in capture_inputs():
+        try:
+            r = runner([
+                "ffmpeg", "-y", "-f", fmt, "-i", dev,
+                "-t", str(seconds), "-acodec", "pcm_s16le",
+                "-ar", "16000", "-ac", "1", clip
+            ], capture_output=True, text=True, timeout=15)
+        except Exception as e:
+            failures.append(f"{fmt}:{dev}: could not run: {e}")
+            continue
+        if os.path.exists(clip) and os.path.getsize(clip) > 1000:
+            return clip, None, f"{fmt}:{dev}"
         tail = (r.stderr or "").strip().splitlines()
         why = tail[-1] if tail else f"ffmpeg exited {r.returncode}"
-        return None, f"microphone capture failed: {why}"
-    return clip, None
+        failures.append(f"{fmt}:{dev}: {why}")
+    return None, ("microphone capture failed — "
+                  + "; ".join(failures)), None
 
 
 def clip_level_db(path):
@@ -140,17 +164,18 @@ def transcribe(clip):
 def check_microphone(seconds=2):
     """Record and transcribe; returns (text, note). text is
     None when hearing worked but words are unavailable."""
-    clip, err = capture_clip(seconds)
+    clip, err, used = capture_clip(seconds)
     if err:
         raise RuntimeError(err)
     try:
         level = clip_level_db(clip)
         text = transcribe(clip)
         if text is None:
-            return None, (f"the microphone works (recorded at "
-                          f"{level} dB) but no speech-to-text is "
-                          f"installed on this machine, so words "
-                          f"can't be transcribed yet")
+            return None, (f"the microphone works (recorded via "
+                          f"{used} at {level} dB) but no "
+                          f"speech-to-text is installed on this "
+                          f"machine, so words can't be "
+                          f"transcribed yet")
         return text, None
     finally:
         try:

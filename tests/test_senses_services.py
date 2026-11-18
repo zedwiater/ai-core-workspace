@@ -82,6 +82,48 @@ class VisionDiscoveryTests(unittest.TestCase):
         self.assertEqual(out["details"]["hillbilly-front"],
                          "rtsp")
 
+    def test_twin_nodes_both_survive(self):
+        # one camera, two nodes, one name: capture + metadata.
+        # The metadata node must not overwrite the capture node.
+        os.makedirs(os.path.join(self.sys_root, "video1"))
+        with open(os.path.join(self.sys_root, "video1", "name"),
+                  "w") as f:
+            f.write("HP Wide Vision HD Camera")
+        open(os.path.join(self.dev_root, "video1"), "w").close()
+        cmap = vision.camera_map(self.sys_root, self.config,
+                                 self.dev_root)
+        locals_ = [k for k, v in cmap.items()
+                   if v["kind"] == "local" and k != "webcam"]
+        self.assertEqual(len(locals_), 2)
+
+    def test_alias_grab_falls_through_to_the_capture_node(self):
+        os.makedirs(os.path.join(self.sys_root, "video1"))
+        with open(os.path.join(self.sys_root, "video1", "name"),
+                  "w") as f:
+            f.write("HP Wide Vision HD Camera")
+        open(os.path.join(self.dev_root, "video1"), "w").close()
+        cmap = vision.camera_map(self.sys_root, self.config,
+                                 self.dev_root)
+        # point the alias at the metadata node, like the old
+        # collision did — the grab must still find video0
+        cmap["webcam"] = {"kind": "local",
+                          "device": os.path.join(self.dev_root,
+                                                 "video1")}
+
+        def runner(cmd, **kw):
+            class R:
+                returncode = 1
+                stderr = "Inappropriate ioctl for device"
+            if cmd[5].endswith("video0"):
+                with open(cmd[-1], "wb") as f:
+                    f.write(b"x" * 2048)
+                R.returncode = 0
+                R.stderr = ""
+            return R()
+        out = vision.grab_frame("webcam", cmap, runner=runner)
+        self.assertEqual(out["status"], "ok")
+        self.assertTrue(out["device"].endswith("video0"))
+
 
 class SoundHonestyTests(unittest.TestCase):
     def test_microphone_present_from_sound_class(self):
@@ -107,6 +149,30 @@ class SoundHonestyTests(unittest.TestCase):
         self.assertGreater(level, -20)
         self.assertLess(level, -5)
 
+    def test_capture_chain_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "pcmC0D0c"), "w").close()
+            inputs = sound.capture_inputs(d)
+        self.assertEqual(inputs[0], ("pulse", "default"))
+        self.assertEqual(inputs[1], ("alsa", "default"))
+        self.assertEqual(inputs[2], ("alsa", "hw:0"))
+
+    def test_capture_walks_the_chain(self):
+        def runner(cmd, **kw):
+            class R:
+                returncode = 1
+                stderr = "Input/output error"
+            if cmd[3] == "alsa" and cmd[5] == "default":
+                with open(cmd[-1], "wb") as f:
+                    f.write(b"x" * 2048)
+                R.returncode = 0
+                R.stderr = ""
+            return R()
+        path, err, used = sound.capture_clip(1, runner=runner)
+        self.assertIsNone(err)
+        self.assertEqual(used, "alsa:default")
+        os.remove(path)
+
     def test_capture_failure_names_itself(self):
         # ffmpeg pointed at a nonexistent input path shape is
         # hard to fake portably; instead pin the contract: the
@@ -114,8 +180,8 @@ class SoundHonestyTests(unittest.TestCase):
         src = open(os.path.join(
             ROOT, "rings", "atmosphere", "mcp-sound.py")).read()
         self.assertIn("microphone capture failed", src)
-        self.assertIn("no speech-to-text is", src)
-        self.assertIn("installed on this machine", src)
+        self.assertIn("speech-to-text is installed on this",
+                      src)
         self.assertNotIn('"listening": LISTENING', src)
 
 
