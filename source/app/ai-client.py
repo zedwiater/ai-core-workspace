@@ -2642,7 +2642,16 @@ class AIClient(Adw.Application):
                                    f"frame…", "system")
 
                 def work():
-                    _ok, line = quick_actions.camera_still(cam)
+                    # One camera can register sibling nodes
+                    # that cannot capture (metadata) — walk
+                    # the found cameras until a frame lands,
+                    # like the vision service does.
+                    _ok, line = False, ""
+                    for _cam in cams:
+                        _ok, line = quick_actions.camera_still(
+                            _cam)
+                        if _ok:
+                            break
                     GLib.idle_add(self.append_bubble, line, "ai")
                 threading.Thread(target=work, daemon=True).start()
             else:
