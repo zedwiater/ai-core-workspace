@@ -31,10 +31,15 @@ KNOWN_MODELS = [
 # Seat policy (the census doctrine, applied to a pairing):
 # full GPU fit needs headroom over the raw weights (KV + runtime);
 # a split seat may lean on RAM but the model may not exceed the
-# combined pool; a CPU seat needs the weights plus working room.
+# combined pool; a CPU seat needs the weights plus working room —
+# AND the machine must stay a machine: the desktop, the app and
+# the OS keep a reserve the model may not eat. (Learned the hard
+# way on the reference laptop, 2026-11-17: an 8B paired onto 7 GB
+# total left the desktop nothing, and the machine hard-locked.)
 FULL_GPU_HEADROOM = 1.15
 SPLIT_POOL = 1.0
 CPU_HEADROOM = 1.3
+OS_RESERVE_GB = 2.0
 
 
 def _aptitude(census):
@@ -59,7 +64,7 @@ def pair(census):
                 and vram_gb >= size * 0.25:
             mode = "GPU+CPU split seat"
             frac = min(0.85, vram_gb / (size * FULL_GPU_HEADROOM))
-        elif ram_gb >= size * CPU_HEADROOM:
+        elif (ram_gb - OS_RESERVE_GB) >= size * CPU_HEADROOM:
             mode, frac = "CPU seat", 0.0
         else:
             continue
