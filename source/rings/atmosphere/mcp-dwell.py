@@ -253,6 +253,28 @@ def run_cycle():
              "queue_depth": dwell_mod.queue_depth(),
              "mode": _state.get("mode"),
              "limp_why": _state.get("limp_why", "")})
+        # Bilateral outreach rotation (Zak, 2026-11-18): the
+        # dwell loop carries one outreach pass per cycle; the
+        # module self-gates (awake window, daily cap, kill
+        # switch). Fail-safe: any failure logs one timeline
+        # line and never breaks dwell.
+        try:
+            import subprocess as _sp
+            _r = _sp.run(
+                [sys.executable,
+                 os.path.expanduser("~/george-lab/loops/outreach.py"),
+                 "tick"],
+                capture_output=True, text=True, timeout=30)
+            if _r.returncode != 0:
+                dwell_mod.log_timeline(
+                    {"kind": "outreach-error",
+                     "why": (_r.stderr or _r.stdout or "?")[-200:]})
+        except Exception as _e:
+            try:
+                dwell_mod.log_timeline(
+                    {"kind": "outreach-error", "why": str(_e)})
+            except Exception:
+                pass
         return {"status": "ok", "grabbed": grabbed,
                 "level_db": level_db, "rose": rose,
                 "emergency": emergency,
