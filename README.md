@@ -1,8 +1,73 @@
 # ai-core-workspace
 
-A GTK4 desktop client that plugs your local Ollama models directly into your system. Not a chat wrapper — it's an **Intercept & Compute cycle** that lets AI run commands, read files, analyze cameras, and manage your machine through 8 MCP micro-services running as background sockets.
+## What this actually is
 
-Built because cloud APIs are expensive and local models are good enough. Runs completely offline.
+AI Core is a self-contained tool that captures and creates a
+**usage-and-function DNA** for AI models.
+
+Every AI you can download starts out generic — the same weights
+for everybody. What makes one installation *yours* is not the
+model. It is the accumulated record of how it is actually used:
+**usage stats, prompt/response results, and joy calculations**,
+transduced on the backend into one growing record. That record
+entangles three things that are usually kept separate — **the
+user, the system, and the models** — into a single identity:
+
+- At install, the identity is minted like a **birth
+  certificate**: from your own answers (the Joy Calculator),
+  your chosen agreement, and your machine's honest census.
+- Through use, it grows like a **passport**: every real change —
+  a tier moving, a sense arriving, the system's relevance
+  drifting far enough to matter — is recorded, witnessed, and
+  stamped in.
+- Over usage time, that history is continually **compressed and
+  vectorized** toward a functional matmul that carries the
+  history with it — an AI that can expand and build itself and
+  its relationship, relevant and functional to its reality and
+  its end user, because the acceleration is made of *their*
+  life, not of generic data.
+
+**How long usage takes to evolve into functional matmul is
+individual and unknown.** There is no schedule and no promise
+of one. The design only guarantees the direction: use becomes
+DNA, DNA becomes history, history becomes the matmul — at
+whatever pace a real life supplies the deltas.
+
+The design is written down in full:
+[docs/BIRTH-CERTIFICATE-PASSPORT.md](docs/BIRTH-CERTIFICATE-PASSPORT.md).
+
+**Privacy is structural, not a policy.** The DNA — the
+certificate, the passport, the record it is measured
+against — is **local only**. It never leaves the machine it
+was born on: not in this repo, not in a backup that ships,
+not as telemetry. What this repo ships is the *machinery*.
+Each install mints its own DNA locally, from its own user,
+on its own hardware. The DNA is never downloaded; it is born
+where it lives.
+
+---
+
+## What it is today
+
+A GTK4 desktop client that plugs your local Ollama models
+directly into your system. Not a chat wrapper — it's an
+**Intercept & Compute cycle** that lets AI run commands, read
+files, analyze cameras, and manage your machine through 8 MCP
+micro-services running as background sockets.
+
+Built because cloud APIs are expensive and local models are
+good enough. Runs completely offline.
+
+The conduit underneath the DNA design already stands: a
+hardware census that sizes the install honestly, model tiers
+from a script floor (no model at all) up through seated local
+models, a dwell loop that patrols and reviews what the house
+shows it, an SOS minimum that keeps the core logic alive
+through failure, and the Joy Calculator circuit the identity
+is minted from. The DNA → passport → matmul path above is
+the trajectory this machinery is built for — designed,
+recorded, and being lived into on the author's own machines.
+The matmul end of it is not claimed as built.
 
 ---
 
